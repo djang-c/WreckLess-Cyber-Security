@@ -273,7 +273,7 @@ runs/CVE-2024-21513-<timestamp>/
 
 - [ ] Run Red and Blue end to end on the local models
 - [ ] OpenShell / NemoClaw integration once installed
-- [ ] Slack Socket Mode with interactive "Approve PR" button
+- [x] Slack Socket Mode with interactive "Approve fix" / "Reject" buttons (records a signed-off commit; no PR is opened)
 - [ ] More CVEs (Langflow code execution, other excessive-agency cases)
 - [ ] Watchdog loop: poll feeds overnight, triage, and auto-run
 

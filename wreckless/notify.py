@@ -1,7 +1,7 @@
 """Outbound-only notifications. Slack bot token (post + live update) > webhook > local outbox.
 
 Every `send()` re-renders ONE cumulative run card (header + timeline of beats + latest detail +
-context, plus Approve/Reject buttons on the final "Draft PR Ready" beat). With a bot token the
+context, plus Approve/Reject buttons on the final "Fix branch ready" beat). With a bot token the
 first beat is posted and later beats `chat.update` the same message `ts`. `build_blocks()` is pure.
 """
 import json
@@ -36,7 +36,7 @@ def beat_outcome(title: str) -> str:
     t = title.lower()
     if "fail" in t or "❌" in title:
         return "fail"
-    if "draft pr ready" in t:
+    if "fix branch ready" in t:  # swarm's final success beat
         return "ok"
     return "progress"
 
@@ -50,7 +50,7 @@ def build_blocks(beats: list[dict], *, cve: str | None = None, elapsed_s: float 
         return []
     last = beats[-1]
     outcome = beat_outcome(last["title"])
-    status = {"ok": ("✅", "Draft PR ready"), "fail": ("❌", "Needs a human"),
+    status = {"ok": ("✅", "Fix branch ready (pending review)"), "fail": ("❌", "Needs a human"),
               "progress": ("⏳", f"{ICONS.get(last['role'], '•')} in progress")}[outcome]
     header = f"{status[0]} WreckLess · {cve or 'run'} · {status[1]}"
     lines = []
@@ -77,7 +77,7 @@ def build_blocks(beats: list[dict], *, cve: str | None = None, elapsed_s: float 
                       BUTTON_VALUE_MAX)
         blocks.append({"type": "actions", "block_id": "wreckless_decision", "elements": [
             {"type": "button", "action_id": APPROVE_ACTION, "style": "primary", "value": value,
-             "text": {"type": "plain_text", "text": "Approve PR"}},
+             "text": {"type": "plain_text", "text": "Approve fix"}},
             {"type": "button", "action_id": REJECT_ACTION, "style": "danger", "value": value,
              "text": {"type": "plain_text", "text": "Reject"}},
         ]})

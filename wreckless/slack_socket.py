@@ -1,4 +1,4 @@
-"""Optional Slack Socket Mode listener for the run card's "Approve PR" / "Reject" buttons.
+"""Optional Slack Socket Mode listener for the run card's "Approve fix" / "Reject" buttons.
 
 Socket Mode is outbound-only (wss to *.slack.com), so it survives the cloud-LLM airgap.
 Enabled only if `slack_bolt` is importable AND SLACK_BOT_TOKEN + SLACK_APP_TOKEN are set;

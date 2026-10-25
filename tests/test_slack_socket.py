@@ -29,7 +29,7 @@ class FakeClient:
 
 
 def final_card():
-    return build_blocks([{"role": "blue", "title": f"✅ Draft PR Ready: {CVE}", "body": "diff", "t_rel": 9}],
+    return build_blocks([{"role": "blue", "title": f"✅ Fix branch ready (local, pending review): {CVE}", "body": "diff", "t_rel": 9}],
                         cve=CVE, run_id=RUN_ID, branch=BRANCH, commit=COMMIT)
 
 

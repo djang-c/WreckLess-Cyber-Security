@@ -2,7 +2,7 @@
 
 WreckLess posts **one evolving run card** per run (`wreckless/notify.py`): first beat is
 `chat.postMessage`, every later beat `chat.update`s the same message. The final
-"Draft PR Ready" beat adds **Approve PR** / **Reject** buttons (`wreckless_approve`,
+"Fix branch ready (local, pending review)" beat adds **Approve fix** / **Reject** buttons (`wreckless_approve`,
 `wreckless_reject`), handled by `wreckless/slack_socket.py` over Socket Mode.
 
 Socket Mode is outbound-only (wss to `*.slack.com`), so no public URL is needed and it

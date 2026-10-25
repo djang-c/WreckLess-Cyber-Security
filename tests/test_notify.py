@@ -46,7 +46,7 @@ def run_beats(n, fail=False):
     n.send("red", f"🚨 Intrusion reproduced: {CVE}", "Commit `deadbeef00` exploitable.\n```pwned```")
     if fail:
         return n.send("blue", f"Patch failed validation: {CVE}", "Needs a human.")
-    return n.send("blue", f"✅ Draft PR Ready: {CVE}", FINAL_BODY)
+    return n.send("blue", f"✅ Fix branch ready (local, pending review): {CVE}", FINAL_BODY)
 
 
 def test_first_beat_posts_later_beats_update_same_ts(bot):
@@ -65,8 +65,8 @@ def test_card_is_cumulative_per_beat(bot):
     assert b2[0]["text"]["text"].startswith("⏳") and "Advisory ingested" in texts(b2)
     assert "🎩" in texts(b2) and not actions(b2)
     t3 = texts(b3)
-    assert b3[0]["text"]["text"] == f"✅ WreckLess · {CVE} · Draft PR ready"
-    assert all(s in t3 for s in ("🕵️", "🎩", "👷", "Draft PR Ready", "enclave: `subprocess`",
+    assert b3[0]["text"]["text"] == f"✅ WreckLess · {CVE} · Fix branch ready (pending review)"
+    assert all(s in t3 for s in ("🕵️", "🎩", "👷", "Fix branch ready", "enclave: `subprocess`",
                                  "patch: `cached`"))
     [act] = actions(b3)
     ids = [e["action_id"] for e in act["elements"]]
@@ -121,7 +121,7 @@ def test_webhook_and_outbox_fallbacks(monkeypatch, tmp_path):
 def test_slack_limits_respected():
     huge = "x" * 10_000
     beats = [{"role": "red", "title": huge, "body": "```" + huge, "t_rel": i} for i in range(80)]
-    beats[-1]["title"] = "✅ Draft PR Ready: " + huge
+    beats[-1]["title"] = "✅ Fix branch ready (local, pending review): " + huge
     blocks = build_blocks(beats, cve="CVE-" + huge, run_id="r", branch="b")
     assert len(blocks) <= notify.BLOCKS_MAX
     assert len(blocks[0]["text"]["text"]) <= 150
@@ -134,3 +134,12 @@ def test_slack_limits_respected():
 
 def test_build_blocks_empty():
     assert build_blocks([]) == []
+
+
+def test_swarm_final_title_gets_the_approve_buttons():
+    """The final beat swarm.py actually sends must render as success (buttons shown)."""
+    import inspect
+    from wreckless import notify, swarm
+    assert 'title = "Fix branch ready (local, pending review)"' in inspect.getsource(swarm)
+    assert notify.beat_outcome("✅ Fix branch ready (local, pending review): CVE-X#1") == "ok"
+    assert notify.beat_outcome("✅ Fix branch ready (local, pending review) · ⚠️ CACHED: CVE-X#1") == "ok"
