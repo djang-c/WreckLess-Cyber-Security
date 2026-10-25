@@ -138,11 +138,11 @@ def steps_bar(st: RunState) -> Text:
         if i:
             t.append("  ──  ", style="dim")
         if bad and i == at:
-            t.append(f" ✗ {i + 1} {label} ", style="bold white on red")
+            t.append(f" ✗ {i + 1} {label} ", style="bold red")
         elif i < at or st.phase == "done":
-            t.append(f" ✓ {i + 1} {label} ", style="bold black on green")
+            t.append(f" ✓ {i + 1} {label} ", style="")
         elif i == at:
-            t.append(f" ▶ {i + 1} {label} ", style="bold black on yellow")
+            t.append(f" ▶ {i + 1} {label} ", style="bold underline")
         else:
             t.append(f"   {i + 1} {label} ", style="dim")
     t.append("\n")
@@ -155,11 +155,11 @@ def steps_bar(st: RunState) -> Text:
 
 def headline(st: RunState, override: str | None = None) -> Text:
     if override:
-        return Text(override, style="bold yellow", justify="center")
+        return Text(override, style="bold", justify="center")
     text = HEADLINES.get(st.phase, "")
     if st.phase in ("done", "rejected", "fix_failed") and st.t0 and st.t_end:
         text += f"  ({st.t_end - st.t0:.0f} s)"
-    color = {"rejected": "bold red", "fix_failed": "bold red", "failed": "bold red", "done": "bold green"}
+    color = {"rejected": "bold red", "fix_failed": "bold red", "failed": "bold red"}
     return Text(text, style=color.get(st.phase, "bold"), justify="center")
 
 
@@ -167,15 +167,14 @@ def item_panel(st: RunState) -> Text:
     t = Text()
     t.append("ITEM  ", style="bold")
     t.append(f"{st.item or '—'}\n")
-    for s in st.states:
-        color = {"verified": "green", "patched": "green", "notified": "green", "rejected": "red",
-                 "patch_failed": "red", "failed": "red"}.get(s, "yellow")
-        t.append(f"  → {s}\n", style=color)
+    for n, s in enumerate(st.states):
+        bad = s in ("rejected", "patch_failed", "failed")
+        t.append(f"  → {s}\n", style="red" if bad else "bold" if n == len(st.states) - 1 else "dim")
     if st.gate:
         word = ("VERIFIED" if st.gate.get("strength") == "verified" else "REACHABLE") \
             if st.gate.get("passed") else "REJECTED"
         t.append("\nGATE  ", style="bold")
-        t.append(word + "\n", style="green" if st.gate.get("passed") else "red")
+        t.append(word + "\n", style="bold" if st.gate.get("passed") else "bold red")
         t.append(f"  control: {st.gate.get('control')}\n", style="dim")
         if st.gate.get("flaw"):
             t.append(f"  flaw: {st.gate['flaw']}\n", style="dim")
@@ -185,7 +184,7 @@ def item_panel(st: RunState) -> Text:
                          ("exploit blocked", "exploit_blocked")):
             v = st.score.get(k)
             t.append(f"  {'PASS' if v else 'n/a ' if v is None else 'FAIL'}  ",
-                     style="green" if v else "dim" if v is None else "bold red")
+                     style="bold" if v else "dim" if v is None else "bold red")
             t.append(label + "\n")
         if st.score.get("hardening"):
             t.append(f"  probes {st.score['hardening']}\n", style="dim")
@@ -205,7 +204,7 @@ def gb10_text(snap) -> Text:
     if snap.mem_total_gb:
         frac = snap.mem_used_gb / snap.mem_total_gb
         t.append("MEMORY ", style="bold")
-        t.append("█" * int(frac * 20), style="magenta")
+        t.append("█" * int(frac * 20))
         t.append("░" * (20 - int(frac * 20)), style="dim")
         t.append(f" {snap.mem_used_gb:.0f}/{snap.mem_total_gb:.0f} GB\n")
     else:
@@ -214,12 +213,26 @@ def gb10_text(snap) -> Text:
     for p in snap.ports:
         t.append(f"{p.role:<12}", style="bold")
         if not p.up:
-            t.append(f":{p.port} down\n", style="red")
+            t.append(f":{p.port} down\n", style="dim")
             continue
         rate = f"{p.tok_s:5.1f} tok/s" if p.tok_s is not None else "  …   tok/s"
-        t.append(f":{p.port} {rate}  run {p.running:.0f} wait {p.waiting:.0f}  {p.ckpt or p.model or ''}\n",
-                 style="green")
+        t.append(f":{p.port} {rate}  run {p.running:.0f} wait {p.waiting:.0f}  {p.ckpt or p.model or ''}\n")
     return t
+
+
+def calm(line: str) -> Text:
+    """An ANSI line as Text with foreground colour only: no background blocks, no reverse video."""
+    from rich.style import Style
+    text = Text.from_ansi(line)
+    spans = []
+    for sp in text.spans:
+        st = sp.style if isinstance(sp.style, Style) else Style.parse(str(sp.style))
+        # a coloured block (e.g. black on green) keeps its colour as the text colour instead
+        color = st.bgcolor if st.bgcolor and not st.bgcolor.is_default else st.color
+        spans.append(sp._replace(style=Style(color=color, bold=st.bold or bool(st.bgcolor), dim=st.dim,
+                                             italic=st.italic)))
+    text.spans = spans
+    return text
 
 
 def queue_rows(db: Path, limit: int = 300) -> list[tuple]:
@@ -250,7 +263,7 @@ def run_env(slack: bool) -> dict:
 class Confirm(ModalScreen[bool]):
     DEFAULT_CSS = """
     Confirm { align: center middle; }
-    #box { width: 76; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
+    #box { width: 76; height: auto; border: round $foreground 40%; background: $surface; padding: 1 2; }
     #box Horizontal { height: auto; margin-top: 1; }
     """
 
@@ -262,7 +275,7 @@ class Confirm(ModalScreen[bool]):
         with Vertical(id="box"):
             yield Label(self.text)
             with Horizontal():
-                yield Button(self.yes, variant="warning", id="yes")
+                yield Button(self.yes, variant="primary", id="yes")
                 yield Button("Cancel", id="no")
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
@@ -273,7 +286,7 @@ class ModelPicker(ModalScreen):
     """Plain chooser for one agent's AI model. Returns ("switch"|"swap", Option) or None."""
     DEFAULT_CSS = """
     ModelPicker { align: center middle; }
-    #pick { width: 96; height: 26; border: thick $accent; background: $surface; padding: 1 2; }
+    #pick { width: 96; height: 26; border: round $foreground 40%; background: $surface; padding: 1 2; }
     #pick OptionList { height: 1fr; margin: 1 0; }
     #pick Horizontal { height: auto; }
     """
@@ -286,9 +299,9 @@ class ModelPicker(ModalScreen):
     def compose(self) -> ComposeResult:
         who, job = ROLE_CARDS[self.role]
         with Vertical(id="pick"):
-            yield Label(Text.assemble(("Choose the AI model for ", "bold"), (who, "bold cyan"),
+            yield Label(Text.assemble(("Choose the AI model for ", "bold"), (who, "bold underline"),
                                       (f"  ({job})", "dim")))
-            yield Label(Text("Green: already running, switches instantly.  Yellow: stored on disk, "
+            yield Label(Text("ready: already running, switches instantly.  load: stored on disk, "
                              "loaded into memory in place of the current one (a few minutes).", style="dim"))
             yield OptionList(id="choices")
             with Horizontal():
@@ -311,11 +324,11 @@ class ModelPicker(ModalScreen):
             ol.add_option(ListOption("no models found (is vLLM or Ollama running?)", disabled=True))
         for n, o in enumerate(opts):
             if o.status == "ready":
-                tag, note = ("● ready  ", "green"), "running, switch now"
+                tag, note = ("● ready  ", "bold"), "running, switch now"
             elif o.status == "swap":
-                tag, note = ("● load   ", "yellow"), "on disk, load it in"
+                tag, note = ("○ load   ", ""), "on disk, load it in"
             else:
-                tag, note = ("○ absent ", "dim"), "not downloaded"
+                tag, note = ("  absent ", "dim"), "not downloaded"
             ol.add_option(ListOption(Text.assemble(tag, (o.name, "bold"), f"  {o.blurb}", (f"  · {note}", "dim")),
                                      id=str(n), disabled=o.status == "missing"))
 
@@ -341,43 +354,47 @@ class BrainCard(Vertical):
         who, job = ROLE_CARDS[self.role]
         yield Static(Text.assemble((who, "bold"), (f" · {job}", "dim")), classes="who")
         yield Static("…", id=f"model-{self.role}", classes="model")
-        yield Button("Change model", id=f"change-{self.role}", variant="primary", classes="change")
+        yield Button("Change model", id=f"change-{self.role}", classes="change")
 
     def show(self, up: bool, ckpt: str) -> None:
         name, blurb = models.friendly(ckpt)
         self.query_one(f"#model-{self.role}", Static).update(Text.assemble(
-            ("● " if up else "○ ", "green" if up else "red"), (name, "bold"),
-            (f"  {'running' if up else 'offline'}", "green" if up else "red")))
+            ("● " if up else "○ ", "" if up else "dim"), (name, "bold"),
+            (f"  {'running' if up else 'offline'}", "dim")))
 
 
 class WrecklessApp(App):
     TITLE = "WreckLess"
     SUB_TITLE = "local AI security team"
     CSS = """
+    Screen { background: $background; }
     #hero { height: 16; }
     #stage { width: 3fr; }
     #steps { height: 3; margin-top: 1; content-align: center middle; }
     #headline { height: 2; padding: 0 2; }
     #flock { height: 10; content-align: center middle; }
-    #gb10 { width: 1fr; min-width: 36; height: 100%; border: round $accent; padding: 0 1; }
+    #gb10 { width: 1fr; min-width: 36; height: 100%; border: round $foreground 25%; padding: 0 1; }
     #main { height: 1fr; }
-    #log { width: 3fr; min-height: 6; border: round $primary; }
-    #item_box { width: 1fr; min-width: 36; border: round $secondary; }
-    #brains { height: 7; }
-    .card { width: 1fr; border: round $accent; padding: 0 1; }
-    .card .change { width: 100%; min-width: 16; height: 3; }
+    #log { width: 3fr; min-height: 6; border: round $foreground 25%; }
+    #item_box { width: 1fr; min-width: 36; border: round $foreground 25%; }
     #controls { height: 3; }
     #controls Button { width: 1fr; min-width: 12; }
-    #gates { width: 1fr; } #gate_detail { width: 1fr; border: round $warning; }
-    #roles { height: 7; } #opts { height: 1fr; border: round $primary; } #swaplog { height: 12; border: round $warning; }
+    #set_title { height: 2; padding: 1 1 0 1; }
+    #brains { height: 7; margin: 1 0; }
+    .card { width: 1fr; border: round $foreground 25%; padding: 0 1; }
+    .card .change { width: 100%; min-width: 16; height: 3; }
+    #adv_title { height: 1; padding: 0 1; }
+    #gates { width: 1fr; } #gate_detail { width: 1fr; border: round $foreground 25%; }
+    #roles { height: 5; } #opts { height: 1fr; border: round $foreground 25%; }
+    #swaplog { height: 8; border: round $foreground 25%; }
     """
     BINDINGS = [
         Binding("r", "launch(False)", "Run demo"), Binding("d", "launch(True)", "Run with AI"),
-        Binding("m", "pick('blue')", "Change model"), Binding("p", "replay", "Replay"),
+        Binding("m", "tab('models')", "Settings"), Binding("p", "replay", "Replay"),
         Binding("c", "cycle_cve", "Bug", show=False), Binding("t", "cycle_target", "Code", show=False),
         Binding("s", "toggle_slack", "Slack", show=False),
         Binding("1", "tab('live')", "Live", show=False), Binding("2", "tab('gate')", "Proof", show=False),
-        Binding("3", "tab('queue')", "Findings", show=False), Binding("4", "tab('models')", "AI Models", show=False),
+        Binding("3", "tab('queue')", "Findings", show=False), Binding("4", "tab('models')", "Settings", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -394,6 +411,7 @@ class WrecklessApp(App):
         self.role = "red"
         self.opts: list[models.Option] = []
         self.busy: str | None = None   # headline override while a model loads
+        self.main = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -409,12 +427,9 @@ class WrecklessApp(App):
                     yield RichLog(id="log", wrap=False, markup=False, max_lines=4000)
                     with VerticalScroll(id="item_box"):
                         yield Static(id="item")
-                with Horizontal(id="brains"):
-                    for role in ("red", "blue", "victim"):
-                        yield BrainCard(role)
                 with Horizontal(id="controls"):
-                    yield Button("▶ Run the demo", id="run", variant="success")
-                    yield Button("Run with live AI", id="runai", variant="primary")
+                    yield Button("▶ Run the demo", id="run", variant="primary")
+                    yield Button("Run with live AI", id="runai")
                     yield Button("⟲ Replay", id="replay")
                     yield Button("", id="cve")
                     yield Button("", id="target")
@@ -425,7 +440,13 @@ class WrecklessApp(App):
                     yield RichLog(id="gate_detail", wrap=True, markup=False)
             with TabPane("Findings [3]", id="queue"):
                 yield DataTable(id="queue_table", cursor_type="row")
-            with TabPane("AI Models [4]", id="models"):
+            with TabPane("Settings [4]", id="models"):
+                yield Static(Text.assemble(("AI models", "bold"), ("   Which local model each agent uses. "
+                             "Change one here; it applies from the next finding on.", "dim")), id="set_title")
+                with Horizontal(id="brains"):
+                    for role in ("red", "blue", "victim"):
+                        yield BrainCard(role)
+                yield Static(Text("Advanced: every endpoint and option", style="dim"), id="adv_title")
                 yield DataTable(id="roles", cursor_type="row")
                 yield OptionList(id="opts")
                 yield RichLog(id="swaplog", wrap=True, markup=False)
@@ -433,51 +454,63 @@ class WrecklessApp(App):
 
     # ----- lifecycle -----
     def on_mount(self) -> None:
-        self.query_one("#gates", DataTable).add_columns("time", "item", "exploit", "control", "verdict")
-        self.query_one("#queue_table", DataTable).add_columns("item", "source", "cve", "state", "label", "title")
-        self.query_one("#roles", DataTable).add_columns("role", "uses model", "at")
-        self.query_one("#item_box").border_title = "this finding"
-        self.query_one("#gb10", Static).border_title = "GB10 · memory and speed"
-        self.query_one("#log", RichLog).border_title = "what the agents are doing"
-        self.query_one("#gate_detail", RichLog).border_title = "the proof"
-        self.query_one("#opts", OptionList).border_title = "options"
-        self.query_one("#swaplog", RichLog).border_title = "model changes"
-        self.query_one("#brains").border_title = "AI brains (all local)"
+        self.main = self.screen   # periodic refreshes must not query a popup that is on top
+        self.main.query_one("#gates", DataTable).add_columns("time", "item", "exploit", "control", "verdict")
+        self.main.query_one("#queue_table", DataTable).add_columns("item", "source", "cve", "state", "label", "title")
+        self.main.query_one("#roles", DataTable).add_columns("role", "uses model", "at")
+        self.main.query_one("#item_box").border_title = "this finding"
+        self.main.query_one("#gb10", Static).border_title = "GB10 · memory and speed"
+        self.main.query_one("#log", RichLog).border_title = "what the agents are doing"
+        self.main.query_one("#gate_detail", RichLog).border_title = "the proof"
+        self.main.query_one("#opts", OptionList).border_title = "options"
+        self.main.query_one("#swaplog", RichLog).border_title = "model changes"
         self._labels()
         if self.replay_from:
             self._start_replay(self.replay_from)
         else:
             self._backfill()
         if not self.state.gates:
-            self.query_one("#gate_detail", RichLog).write(Text(
+            self.main.query_one("#gate_detail", RichLog).write(Text(
                 "No proofs recorded yet. Press ▶ Run the demo: the Verifier re-runs the attack on 2 buggy "
                 "copies and 1 fixed copy, in random order, each with a fresh secret, and every run shows here.",
                 style="dim"))
         self._story()
-        self.set_interval(0.25, self._poll)
-        self.set_interval(1 / 8, self._draw_flock)
-        self.set_interval(2.0, self._sample_gb10)
-        self.set_interval(2.0, self._refresh_queue)
-        self.set_interval(3.0, self._probe_brains)
+        self.set_interval(0.25, self._tick(self._poll))
+        self.set_interval(1 / 8, self._tick(self._draw_flock))
+        self.set_interval(2.0, self._tick(self._sample_gb10))
+        self.set_interval(2.0, self._tick(self._refresh_queue))
+        self.set_interval(3.0, self._tick(self._probe_brains))
         self._refresh_roles()
         self._sample_gb10()
         self._probe_brains()
 
+    @staticmethod
+    def _tick(fn):
+        """A timer callback that is quiet while the app is shutting down (widgets already gone)."""
+        from textual.css.query import NoMatches
+
+        def run():
+            try:
+                fn()
+            except NoMatches:
+                pass
+        return run
+
     def _labels(self) -> None:
         running = bool(self.proc and self.proc.poll() is None)
-        self.query_one("#cve", Button).label = f"Bug: {CVE_NAMES.get(self.cve, self.cve)}"
-        self.query_one("#target", Button).label = f"Code: {TARGET_NAMES[self.target]}"
-        sl = self.query_one("#slack", Button)
-        sl.label, sl.variant = ("Slack: ON", "warning") if self.slack else ("Slack: off", "default")
+        self.main.query_one("#cve", Button).label = f"Bug: {CVE_NAMES.get(self.cve, self.cve)}"
+        self.main.query_one("#target", Button).label = f"Code: {TARGET_NAMES[self.target]}"
+        sl = self.main.query_one("#slack", Button)
+        sl.label = "Slack: ON" if self.slack else "Slack: off"
         for b in ("run", "runai"):
-            self.query_one(f"#{b}", Button).disabled = running
+            self.main.query_one(f"#{b}", Button).disabled = running
         rep = " · REPLAY" if self.replay_q else ""
         self.sub_title = (f"{self.home} · {self.target} · {self.cve} · Slack "
                           f"{'ON' if self.slack else 'off'}{' · RUNNING' if running else ''}{rep}")
 
     def _story(self) -> None:
-        self.query_one("#steps", Static).update(steps_bar(self.state))
-        self.query_one("#headline", Static).update(headline(self.state, self.busy))
+        self.main.query_one("#steps", Static).update(steps_bar(self.state))
+        self.main.query_one("#headline", Static).update(headline(self.state, self.busy))
 
     def _backfill(self) -> None:
         """Fold the whole log into state, but only render the recent tail (fast on a long daemon log)."""
@@ -515,15 +548,15 @@ class WrecklessApp(App):
 
     def _handle(self, ev: dict, replay: bool = False) -> None:
         self._fold(ev)
-        log = self.query_one("#log", RichLog)
+        log = self.main.query_one("#log", RichLog)
         width = max(60, (log.size.width or 100) - 4)
         for ln in render_lines(ev, width):
-            log.write(Text.from_ansi(("\033[1;7;33mREPLAY\033[0m " if replay else "") + ln))
-        self.query_one("#item", Static).update(item_panel(self.state))
+            log.write(calm(("\033[1mREPLAY\033[0m " if replay else "") + ln))
+        self.main.query_one("#item", Static).update(item_panel(self.state))
 
     # ----- panels -----
     def _draw_flock(self) -> None:
-        w = self.query_one("#flock", Static)
+        w = self.main.query_one("#flock", Static)
         cols = max(40, w.size.width or 80)
         roles = list(mascots.ROLE_COLORS)
         label_w = max(mascots.W - 2, min(mascots.LABEL_W, (cols + 2) // len(roles) - 4))
@@ -536,39 +569,38 @@ class WrecklessApp(App):
         if not hasattr(self, "_mon"):
             self._mon = Monitor()
         snap = self._mon.sample()
-        self.call_from_thread(self.query_one("#gb10", Static).update, gb10_text(snap))
+        self.call_from_thread(self.main.query_one("#gb10", Static).update, gb10_text(snap))
 
     @work(thread=True, exclusive=True, group="brains")
     def _probe_brains(self) -> None:
         for role, ep in models.current().items():
             up, ckpt = models.serving(ep)
-            self.call_from_thread(self.query_one(f"#card-{role}", BrainCard).show, up, ckpt)
+            self.call_from_thread(self.main.query_one(f"#card-{role}", BrainCard).show, up, ckpt)
 
     def _refresh_queue(self) -> None:
-        t = self.query_one("#queue_table", DataTable)
+        t = self.main.query_one("#queue_table", DataTable)
         rows = queue_rows(self.home / "queue.db")
         t.clear()
         for r in rows:
-            color = "green" if r[3] in ("verified", "patched", "notified") else \
-                "red" if r[3] in ("rejected", "patch_failed", "failed") else "yellow"
+            color = "red" if r[3] in ("rejected", "patch_failed", "failed") else ""
             t.add_row(r[0], r[1], r[2] or "—", Text(r[3], style=color), r[4], (r[5] or "")[:70])
 
     def _add_gate_row(self, g: dict) -> None:
         word = ("VERIFIED" if g.get("strength") == "verified" else "REACHABLE") if g.get("passed") else "REJECTED"
-        self.query_one("#gates", DataTable).add_row(
+        self.main.query_one("#gates", DataTable).add_row(
             time.strftime("%H:%M:%S", time.localtime(g.get("t", 0))), g.get("item") or "—", g.get("script"),
-            g.get("control"), Text(word, style="green" if g.get("passed") else "bold red"),
+            g.get("control"), Text(word, style="bold" if g.get("passed") else "bold red"),
             key=str(len(self.state.gates) - 1))
 
     def on_data_table_row_highlighted(self, e: DataTable.RowHighlighted) -> None:
         if e.data_table.id == "gates" and e.row_key.value is not None:
             g = self.state.gates[int(e.row_key.value)]
-            out = self.query_one("#gate_detail", RichLog)
+            out = self.main.query_one("#gate_detail", RichLog)
             out.clear()
             for ln in render_lines({"kind": "gate_report", "actor": "gate", "t": g.get("t", 0),
                                     **{k: g[k] for k in ("script", "control", "flaw", "runs", "passed",
                                                          "strength", "reason")}}, 90):
-                out.write(Text.from_ansi(ln))
+                out.write(calm(ln))
             out.write(Text("\nHow to read this: the attack ran on two copies of the buggy code and one copy "
                            "with the fix, in random order, each with a fresh secret. It only counts if it "
                            "breaks both buggy copies through the flawed function and fails on the fixed one.",
@@ -579,7 +611,7 @@ class WrecklessApp(App):
 
     # ----- models -----
     def _refresh_roles(self) -> None:
-        t = self.query_one("#roles", DataTable)
+        t = self.main.query_one("#roles", DataTable)
         t.clear()
         for role, ep in models.current().items():
             t.add_row(f"{ROLE_CARDS[role][0]} ({role})", ep.model, ep.url, key=role)
@@ -591,9 +623,9 @@ class WrecklessApp(App):
 
     def _show_options(self, role: str, opts: list) -> None:
         self.opts = opts
-        ol = self.query_one("#opts", OptionList)
+        ol = self.main.query_one("#opts", OptionList)
         ol.clear_options()
-        tag = {"ready": ("READY", "green"), "swap": ("LOAD ", "yellow"), "missing": ("  —  ", "dim")}
+        tag = {"ready": ("READY", "bold"), "swap": ("LOAD ", ""), "missing": ("  —  ", "dim")}
         for i, o in enumerate(opts):
             word, color = tag[o.status]
             ol.add_option(ListOption(Text.assemble((f"[{word}] ", color), (o.name, "bold"),
@@ -632,7 +664,7 @@ class WrecklessApp(App):
                                  "load, the old model comes back."), go)
 
     def _note(self, msg: str) -> None:
-        self.query_one("#swaplog", RichLog).write(Text(f"{time.strftime('%H:%M:%S')} {msg}"))
+        self.main.query_one("#swaplog", RichLog).write(Text(f"{time.strftime('%H:%M:%S')} {msg}"))
 
     @work(thread=True, exclusive=True, group="swap")
     def _swap(self, role: str, o) -> None:
@@ -666,7 +698,7 @@ class WrecklessApp(App):
             self.action_toggle_slack()
 
     def action_tab(self, tab: str) -> None:
-        self.query_one(TabbedContent).active = tab
+        self.main.query_one(TabbedContent).active = tab
 
     def action_cycle_cve(self) -> None:
         self.cve = CVES[(CVES.index(self.cve) + 1) % len(CVES)]
@@ -693,7 +725,7 @@ class WrecklessApp(App):
             self.proc = subprocess.Popen(cmd, cwd=ROOT, env=run_env(self.slack), stdout=logf, stderr=logf,
                                          stdin=subprocess.DEVNULL)
         self.state.phase, self.state.t0 = "find", time.time()
-        self.query_one(TabbedContent).active = "live"
+        self.main.query_one(TabbedContent).active = "live"
         self.notify(f"{CVE_NAMES.get(self.cve, self.cve)} · {TARGET_NAMES[self.target]}"
                     + (" · with live AI" if llm else " · scripted"), title="Run started")
         self._labels()
@@ -712,19 +744,19 @@ class WrecklessApp(App):
         self.replay_q = [e for e in evs if e.get("item") in (last, None) and e["t"] >= start - 1]
         self.replay_t0 = (time.time(), self.replay_q[0]["t"])
         self.flock, self.state = mascots.Flock(), RunState()
-        self.query_one("#gates", DataTable).clear()   # its row keys index state.gates
-        log = self.query_one("#log", RichLog)
+        self.main.query_one("#gates", DataTable).clear()   # its row keys index state.gates
+        log = self.main.query_one("#log", RichLog)
         log.clear()
-        log.write(Text.from_ansi(f"\033[1;7;33m REPLAY of {last} · recorded "
+        log.write(calm(f"\033[1m REPLAY of {last} · recorded "
                                  f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.replay_q[0]['t']))} \033[0m"))
-        self.query_one(TabbedContent).active = "live"
+        self.main.query_one(TabbedContent).active = "live"
 
     def _replay_tick(self) -> None:
         wall0, rec0 = self.replay_t0
         while self.replay_q and self.replay_q[0]["t"] - rec0 <= (time.time() - wall0):
             self._handle(self.replay_q.pop(0), replay=True)
         if not self.replay_q:
-            self.query_one("#log", RichLog).write(Text.from_ansi("\033[1;7;33m END OF REPLAY \033[0m"))
+            self.main.query_one("#log", RichLog).write(calm("\033[1m END OF REPLAY \033[0m"))
 
 
 def main(home: Path, replay: Path | None = None) -> None:

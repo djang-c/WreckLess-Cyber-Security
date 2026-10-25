@@ -150,3 +150,25 @@ def test_offline_card_names_the_model_not_the_port_alias():
     from wreckless.config import ModelEndpoint
     up, ckpt = models.serving(ModelEndpoint("http://127.0.0.1:9/v1", "blue"))
     assert not up and models.friendly(ckpt)[0] == "Qwen3 Coder Next 80B"
+
+
+def test_refresh_keeps_running_while_the_model_chooser_is_open(home):
+    """Regression 2026-10-25: the 0.25 s refresh queried the popup for main-screen widgets and crashed."""
+    async def steps(app, pilot):
+        await pilot.press("m")
+        await pilot.pause(0.3)
+        await pilot.click("#change-blue")
+        await pilot.pause(1.5)           # several refresh ticks with the chooser on top
+        assert type(app.screen).__name__ == "ModelPicker"
+        await pilot.press("escape")
+        await pilot.pause(0.3)
+        assert app.screen is app.main
+        return True
+    assert run_app(home, steps)
+
+
+def test_calm_keeps_block_text_readable():
+    """Black-on-green 'PATCH VALIDATED' must not become black-on-nothing."""
+    t = tui.calm("\033[42;30;1m PATCH VALIDATED \033[0m")
+    [sp] = [s for s in t.spans if s.style]
+    assert sp.style.bgcolor is None and sp.style.color.number == 2   # ANSI green
