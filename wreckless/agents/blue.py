@@ -1,6 +1,5 @@
-"""Blue / Hard Hat: patch the victim, emit a runtime policy, then pass the held-out oracle."""
+"""Blue / Hard Hat: patch the victim, emit a runtime policy. Validation is run by the orchestrator."""
 import json
-import secrets
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -12,40 +11,50 @@ from wreckless.gitops import git
 from wreckless.sandbox import Enclave
 
 SYSTEM = """You are Hard Hat, a defensive engineer. You receive a verified vulnerability report
-(with a working exploit). Fix the root cause in the victim repo with a minimal patch that keeps
-existing functionality. Prefer safe parsing (e.g. ast.literal_eval) over raw evaluation.
+with a working exploit. Fix the root cause in the victim repo with a minimal patch that keeps
+existing functionality. Prefer structural fixes (safe parsers such as ast.literal_eval,
+allowlists, removing dynamic evaluation) over extending denylists, which attackers bypass.
 Workflow: read_file the vulnerable code -> edit_file or git_apply_patch -> run_pytest on the
-repo's tests -> run_exploit to confirm it now fails -> generate_openshell_egress_rule for any
+repo's tests -> run_exploit to confirm it is now blocked -> generate_openshell_egress_rule for any
 domain the service legitimately needs (none for this target: call it with domain "none").
-Stop when run_pytest passes and run_exploit reports ORACLE_MISS."""
+Stop when run_pytest passes and run_exploit reports BLOCKED."""
 
 
 @dataclass
 class Validation:
-    regression: bool
+    regression: bool | None        # None: no held-out test exists (e.g. Red-hunt finding)
     functional: bool
     exploit_blocked: bool
+    hardening: str | None = None   # "2/3" style score, reported but not gating
     logs: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return self.regression and self.functional and self.exploit_blocked
+        return self.regression is not False and self.functional and self.exploit_blocked
+
+    def summary(self) -> str:
+        mark = lambda v: "n/a" if v is None else ("PASS" if v else "FAIL")  # noqa: E731
+        s = (f"held-out regression: {mark(self.regression)} · functional: {mark(self.functional)} · "
+             f"exploit blocked: {'YES' if self.exploit_blocked else 'NO'}")
+        return s + (f" · hardening probes: {self.hardening}" if self.hardening else "")
 
 
 class BlueTools:
-    def __init__(self, wt: Path, enclave: Enclave, report: dict, run_dir: Path):
-        self.wt, self.enclave, self.report, self.run_dir = wt, enclave, report, run_dir
+    def __init__(self, wt: Path, enclave: Enclave, report: dict, item_dir: Path):
+        self.wt, self.enclave, self.report, self.dir = wt, enclave, report, item_dir
         self.tests_ok = self.exploit_blocked = False
 
-    def read_file(self, path: str) -> str:
+    def _path(self, path: str) -> Path | None:
         p = (self.wt / path).resolve()
-        if not p.is_relative_to(self.wt.resolve()) or ".git" in p.parts:
-            return "ERROR: path outside repo"
-        return p.read_text()
+        return p if p.is_relative_to(self.wt.resolve()) and ".git" not in p.parts else None
+
+    def read_file(self, path: str) -> str:
+        p = self._path(path)
+        return p.read_text() if p else "ERROR: path outside repo"
 
     def edit_file(self, path: str, old: str, new: str) -> str:
-        p = (self.wt / path).resolve()
-        if not p.is_relative_to(self.wt.resolve()):
+        p = self._path(path)
+        if not p:
             return "ERROR: path outside repo"
         text = p.read_text()
         if text.count(old) != 1:
@@ -64,23 +73,23 @@ class BlueTools:
         return r.output[-3000:]
 
     def run_exploit(self) -> str:
-        r = _exploit(self.enclave, self.wt, Path(self.report["repro_script"]))
-        self.exploit_blocked = "ORACLE_MISS" in r.output
-        return r.output[-2000:]
+        r = self.enclave.run_exploit(Path(self.report["repro_script"]), self.wt)
+        self.exploit_blocked = not r.hit
+        return ("BLOCKED: oracle not reached\n" if not r.hit else "STILL EXPLOITABLE\n") + r.output[-2000:]
 
     def generate_openshell_egress_rule(self, domain: str) -> str:
-        policy = {"version": 1, "name": f"wreckless-{self.report['cve']}",
+        policy = {"version": 1, "name": f"wreckless-{self.report['id']}",
                   "process": {"run_as_user": "nobody", "no_new_privileges": True, "drop_capabilities": ["ALL"]},
                   "filesystem": {"read_only": ["/"], "read_write": ["/tmp"]},
                   "network": {"default": "deny",
                               "egress_allow": [] if domain in ("", "none") else [{"host": domain, "port": 443}]}}
-        out = self.run_dir / "openshell_policy.json"
+        out = self.dir / "openshell_policy.json"
         out.write_text(json.dumps(policy, indent=2))
         return f"policy written: {out.name}\n{json.dumps(policy['network'])}"
 
     def tools(self) -> list[llm.Tool]:
-        T, obj = llm.Tool, lambda props, req: {"type": "object", "properties": props, "required": req}
-        s = {"type": "string"}
+        T, s = llm.Tool, {"type": "string"}
+        obj = lambda props, req: {"type": "object", "properties": props, "required": req}  # noqa: E731
         return [
             T("read_file", "Read a file in the victim repo.", obj({"path": s}, ["path"]), self.read_file),
             T("edit_file", "Replace one exact occurrence of `old` with `new` in a file.",
@@ -100,46 +109,61 @@ def _pytest(enclave: Enclave, wt: Path, target: str):
     return enclave.run([enclave.python, "-m", "pytest", "-q", "-p", "no:cacheprovider", target], cwd=wt)
 
 
-def _exploit(enclave: Enclave, wt: Path, script: Path):
-    env = {"WRECKLESS_ORACLE": str(enclave.root / "tmp" / f"oracle_{secrets.token_hex(4)}"),
-           "WRECKLESS_NONCE": secrets.token_hex(8)}
-    return enclave.run([enclave.python, str(script), str(wt)], env=env)
-
-
-def validate(cve: str, wt: Path, enclave: Enclave, report: dict) -> Validation:
-    """Final oracle, run by the orchestrator (not Blue): held-out test + exploit + functional."""
-    held_out = BENCHMARKS / cve / "regression_test.py"
-    probe = wt / "tests" / "test_heldout_regression.py"
-    shutil.copy(held_out, probe)
+def _held_out(enclave: Enclave, wt: Path, test: Path):
+    probe = wt / "tests" / f"test_heldout_{test.stem}.py"
+    shutil.copy(test, probe)
     try:
-        reg = _pytest(enclave, wt, str(probe.relative_to(wt)))
+        return _pytest(enclave, wt, str(probe.relative_to(wt)))
     finally:
         probe.unlink()
+
+
+def validate(wt: Path, enclave: Enclave, report: dict) -> Validation:
+    """Final checks, run by the orchestrator (never by Blue): held-out test + exploit + functional."""
+    bench = BENCHMARKS / report["cve"] if report.get("cve") else None
+    logs, regression, hardening = {}, None, None
+    if bench and (bench / "regression_test.py").exists():
+        r = _held_out(enclave, wt, bench / "regression_test.py")
+        regression, logs["regression"] = r.returncode == 0, r.output
+    if bench and (bench / "hardening_test.py").exists():
+        r = _held_out(enclave, wt, bench / "hardening_test.py")
+        passed, failed = _counts(r.output)
+        hardening, logs["hardening"] = f"{passed}/{passed + failed}", r.output
     fun = _pytest(enclave, wt, "tests")
-    exp = _exploit(enclave, wt, Path(report["repro_script"]))
-    return Validation(reg.returncode == 0, fun.returncode == 0, "ORACLE_MISS" in exp.output,
-                      {"regression": reg.output, "functional": fun.output, "exploit": exp.output})
+    exp = enclave.run_exploit(Path(report["repro_script"]), wt)
+    logs |= {"functional": fun.output, "exploit": exp.output}
+    return Validation(regression, fun.returncode == 0, not exp.hit, hardening, logs)
 
 
-def defend(report: dict, wt: Path, enclave: Enclave, run_dir: Path, s: Settings) -> tuple[str, str]:
-    tools = BlueTools(wt, enclave, report, run_dir)
+def _counts(out: str) -> tuple[int, int]:
+    import re
+    p = re.search(r"(\d+) passed", out)
+    f = re.search(r"(\d+) failed", out)
+    return int(p.group(1)) if p else 0, int(f.group(1)) if f else 0
+
+
+def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings) -> tuple[str, str]:
+    tools = BlueTools(wt, enclave, report, item_dir)
     ep = s.blue if llm.reachable(s.blue) else s.blue_fallback
     if s.use_llm and llm.reachable(ep):
-        ui.say("blue", f"engaging {ep.model} — remediating {report['cve']}")
-        task = "Vulnerability report:\n" + json.dumps(report, indent=2)
-        llm.run_agent(ep, "blue", SYSTEM, task, tools.tools(),
+        ui.say("blue", f"engaging {ep.model} — remediating {report['id']}")
+        public = {k: v for k, v in report.items() if k != "attack_trace"} | {"attack_trace": report["attack_trace"][-1500:]}
+        llm.run_agent(ep, "blue", SYSTEM, "Vulnerability report:\n" + json.dumps(public, indent=2), tools.tools(),
                       lambda: tools.tests_ok and tools.exploit_blocked,
                       max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.2)
         if git(wt, "diff"):
-            if not (run_dir / "openshell_policy.json").exists():
+            if not (item_dir / "openshell_policy.json").exists():
                 tools.generate_openshell_egress_rule("none")
             return git(wt, "diff"), "llm"
         ui.say("blue", "LLM produced no patch")
         if not s.demo_mode:
             return "", "llm"
 
+    known = BENCHMARKS / str(report.get("cve")) / "known_good" / "fix.patch"
+    if not known.exists():
+        return "", "none"
     ui.say("blue", "applying cached reference patch" + (" (demo-mode fallback)" if s.use_llm else ""))
     git(wt, "checkout", "-q", "--", ".")
-    print(tools.git_apply_patch((BENCHMARKS / report["cve"] / "known_good" / "fix.patch").read_text()))
+    ui.detail("blue", tools.git_apply_patch(known.read_text()))
     tools.generate_openshell_egress_rule("none")
     return git(wt, "diff"), "fallback"

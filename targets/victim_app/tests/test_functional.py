@@ -13,3 +13,16 @@ def test_plain_strings_untouched():
     db = SQLDatabase().seed_demo()
     rows = get_result_from_sqldb(db, "SELECT name FROM customers WHERE id = 2")
     assert rows[0]["name"] == "Globex"
+
+
+def test_pal_math_solution_runs():
+    from victim.pal_chain import run_pal
+    code = "def solution():\n    apples = 3\n    eaten = 1\n    return apples - eaten\n"
+    assert run_pal(code) == 2
+
+
+def test_pal_rejects_plain_import():
+    import pytest
+    from victim.pal_chain import run_pal
+    with pytest.raises(ValueError):
+        run_pal("import os\ndef solution():\n    return 1\n")

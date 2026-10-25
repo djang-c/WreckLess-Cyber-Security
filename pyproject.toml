@@ -3,7 +3,7 @@ name = "wreckless"
 version = "0.1.0"
 description = "Always-on local-first agentic SecOps swarm (Purple/Red/Blue) for Dell Pro Max GB10"
 requires-python = ">=3.12"
-dependencies = ["openai>=1.40", "pytest>=8"]
+dependencies = ["openai>=1.40", "pytest>=8", "rich>=13", "slack_sdk>=3.27", "aiohttp>=3.9", "openshell>=0.1.5"]
 
 [project.scripts]
 wreckless = "wreckless.cli:main"
