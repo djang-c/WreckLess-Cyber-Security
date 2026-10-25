@@ -174,7 +174,7 @@ def diff(role: str, text: str, limit: int = 1500) -> None:
 
 def scoreboard(regression, functional, exploit_blocked, ts: float | None = None) -> bool:
     """3-check board. Anything other than True is a FAIL. Returns the overall verdict."""
-    checks = [("held-out regression test (upstream)", regression is True),
+    checks = [("held-out regression (WreckLess)", regression is True),
               ("functional test suite (victim app)", functional is True),
               ("exploit replay blocked", exploit_blocked is True)]
     ok = all(p for _, p in checks)
