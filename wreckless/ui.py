@@ -54,7 +54,12 @@ CAPTIONS = {
 # Set by EventLog so terminal output can be replayed later: (role, kind, **data) -> None.
 SINK = None
 REPLAYABLE = {"say", "detail", "banner", "mascot", "intrusion", "diff", "scoreboard",
-              "patch_validated", "notified", "tool", "result", "think", "step"}
+              "patch_validated", "notified", "tool", "result", "think", "step", "gate_report"}
+
+# Set by the full-screen app (wreckless/tui.py): every rendered line goes here, in colour, and
+# nothing is printed or animated on the real terminal. WIDTH then replaces the terminal width.
+OUT = None
+WIDTH = None
 
 
 def _emit(role: str, kind: str, **data) -> None:
@@ -63,6 +68,8 @@ def _emit(role: str, kind: str, **data) -> None:
 
 
 def color_enabled(stream=None) -> bool:
+    if OUT is not None:
+        return True
     if os.environ.get("NO_COLOR"):
         return False
     if os.environ.get("FORCE_COLOR"):
@@ -88,18 +95,24 @@ def _c(code: str, text: str) -> str:
 
 
 def _out(text: str) -> None:
+    if OUT is not None:
+        with _LOCK:
+            OUT(sanitize(text))
+        return
     with _LOCK:
         print(sanitize(text) if color_enabled() else strip_ansi(text), flush=True)
 
 
 def _width() -> int:
+    if OUT is not None and WIDTH:
+        return max(40, min(WIDTH, 110))
     if not color_enabled():
         return PLAIN_WIDTH
     return max(40, min(shutil.get_terminal_size((PLAIN_WIDTH, 24)).columns, 110))
 
 
 def _animate() -> bool:
-    return color_enabled() and sys.stdout.isatty() and not os.environ.get("WRECKLESS_NO_ANIM")
+    return OUT is None and color_enabled() and sys.stdout.isatty() and not os.environ.get("WRECKLESS_NO_ANIM")
 
 
 # True while `wreckless replay` renders: every trace line is marked, not just the banners.
@@ -310,7 +323,7 @@ def intrusion(item: str, script: str, source: str, strength: str | None = "verif
             time.sleep(0.12)
             print(f"\033[{len(lines)}F", end="", flush=True)
         for ln in lines:
-            print(sanitize(f"{ON_RED}{ln}{RESET}"), flush=True)
+            _out(f"{ON_RED}{ln}{RESET}")   # through _out: the TUI captures it like every other line
 
 
 def diff(role: str, text: str, limit: int = 1500, _record: bool = True) -> None:
@@ -361,6 +374,28 @@ def scoreboard(regression, functional, exploit_blocked, hardening: str | None = 
         verdict = f"{passed}/{len(counted)} passed · " + ("ALL PASS" if ok else "FAILED — needs a human")
         _out(f"   └{'─' * inner}┘  " + _c(GREEN if ok else RED, verdict))
     return ok
+
+
+def gate_report(script: str, control: str, flaw: str | None, runs: list[dict], passed: bool,
+                strength: str | None, reason: str, _record: bool = True) -> None:
+    """The verifier's evidence: each run in the order it ran, which copy, hit or miss, from where."""
+    if _record:
+        _emit("gate", "gate_report", script=script, control=control, flaw=flaw, runs=runs,
+              passed=passed, strength=strength, reason=reason)
+    color = ROLES["gate"][0]
+    g = lambda s: _c(color, s)  # noqa: E731
+    with _LOCK:
+        _out(g("   ┌─ ") + _c(BOLD, f"GATE · {script}") + f" · control: {control}"
+             + (f" · flawed path: {flaw}" if flaw else " · flawed path unconfirmed"))
+        for r in runs:
+            hit = _c(GREEN if r["copy"] == "vulnerable" else RED, "HIT ") if r["hit"] else _c(DIM, "miss")
+            if r["copy"] == "control":
+                hit = _c(RED, "HIT ") if r["hit"] else _c(GREEN, "miss")
+            via = f"  via {r['site']}" if r.get("site") else ""
+            bad = _c(RED, "  guard violation") if r.get("violation") else ""
+            _out(g("   │ ") + f"run {r['n']}  {r['copy']:<10}  {hit}{via}{bad}")
+        word = ("VERIFIED" if strength == "verified" else "REACHABLE") if passed else "REJECTED"
+        _out(g("   └─ ") + _c(GREEN if passed else RED, word) + f"  {reason}")
 
 
 def patch_validated(item: str, branch: str, commit: str, source: str, _record: bool = True) -> None:

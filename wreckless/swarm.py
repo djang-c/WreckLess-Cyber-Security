@@ -12,7 +12,7 @@ from wreckless import feeds
 from wreckless.agents import blue, purple, red
 from wreckless.candidates import CandidateQueue
 from wreckless import targets
-from wreckless.config import BENCHMARKS, INTEL_DB, Settings
+from wreckless.config import BENCHMARKS, INTEL_DB, Settings, rerouted
 from wreckless.events import EventLog
 from wreckless.kb import IntelDB
 from wreckless.gitops import commit_all, git, init_victim, worktree
@@ -149,6 +149,7 @@ class Swarm:
         # claim before touching disk: an unclaimed item belongs to someone else (maybe the hero)
         if not claimed and not self.queue.try_advance(item_id, "verifying", "gate"):
             return "skipped"  # another worker or process claimed it first
+        self.s = rerouted(self.s)   # a model switched in the TUI applies from the next item on
         d = self.home / "items" / item_id.replace("#", "-")
         d.mkdir(parents=True, exist_ok=True)
         enclave = self._enclave(d)

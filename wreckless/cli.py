@@ -1,4 +1,4 @@
-"""wreckless run | daemon | status | replay | metrics | intel | view | mascots"""
+"""wreckless run | daemon | status | replay | metrics | intel | tui | view | mascots"""
 import argparse
 import json
 import os
@@ -94,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     it.add_argument("--feeds", default="osv,github,kev", help="comma list for sync")
     it.add_argument("--target", choices=targets.names(), default="victim_app", help="whose inventory to sync")
 
+    tu = sub.add_parser("tui", help="full-screen app: live swarm, gate evidence, queue, model picker")
+    tu.add_argument("--home", type=Path, default=RUNS / "swarm")
+    tu.add_argument("--replay", type=Path, help="replay the last finished item of this events.jsonl")
+
     vw = sub.add_parser("view", help="live flock: one bird per role, animated from events.jsonl")
     vw.add_argument("--home", type=Path, default=RUNS / "swarm")
     vw.add_argument("--role", action="append", choices=["purple", "red", "gate", "blue", "core"],
@@ -110,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
         return _intel(a.action, a.query, tuple(a.feeds.split(",")), a.target)
     if a.cmd == "metrics":
         return _metrics(a.watch, a.json)
+    if a.cmd == "tui":
+        from wreckless.tui import main as tui_main
+        tui_main(a.home, a.replay)
+        return 0
     if a.cmd == "view":
         from wreckless.mascots import watch
         watch(a.home / "events.jsonl", a.role)

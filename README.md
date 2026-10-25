@@ -156,6 +156,8 @@ the vulnerable module could not even be imported. `ce61840e` is the last commit 
 
 ## 🖥️ What you see on stage
 
+One command shows everything: `uv run wreckless tui` (or `scripts/tmux_demo.sh` for the pane layout).
+
 <!-- PLACEHOLDER: terminal screenshot with color-coded Purple/Red/Blue trace -->
 <img src="docs/assets/terminal-trace.png" alt="Color-coded terminal trace" width="90%">
 
@@ -241,6 +243,7 @@ scripts/serve_models.sh               # 3 vLLM servers, biggest first
 | Command | What it does |
 |---|---|
 | `wreckless run [--cve ID]` | One CVE through the pipeline: the demo critical path |
+| `wreckless tui [--home DIR] [--replay FILE]` | Full-screen app: live flock + log + checks + GB10 (Live), every gate verdict with its runs (Gate), the queue (Queue), and the model picker (Models: switch a role to a loaded model, or swap a downloaded one, e.g. Nemotron, onto its port). Keys: `r` scripted run, `d` demo run, `c` CVE, `t` target, `s` Slack on/off (off by default), `p` replay |
 | `wreckless daemon [--purple-interval S] [--no-hunt] [--slack-listener]` | Always-on: scheduled Purple, continuous Red hunt, a worker; `--slack-listener` serves the card's Approve/Reject buttons |
 | `wreckless status [--home DIR]` | Queue summary |
 | `wreckless replay [--speed X] [--item ID]` | Re-render a recorded run from `events.jsonl` |

@@ -24,3 +24,9 @@ def _close_enclaves(monkeypatch):
     yield
     for e in made:
         e.close()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_model_routes(tmp_path_factory, monkeypatch):
+    """Never let a test read the TUI's real model choices (runs/model_routes.json)."""
+    monkeypatch.setenv("WRECKLESS_MODEL_ROUTES", str(tmp_path_factory.mktemp("routes") / "model_routes.json"))

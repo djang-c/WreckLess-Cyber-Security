@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 export HF_XET_HIGH_PERFORMANCE=1
 HF=${HF:-.venv/bin/hf}
 failed=()
-while read -r role port names util parser repo rev; do
+while read -r role port names util parser repo rev _extra; do
   [[ -z $role || $role == \#* ]] && continue
   echo "[$(date +%T)] >>> $repo @ $rev"
   if ! "$HF" download "$repo" --revision "$rev" --local-dir "models/${repo#*/}"; then

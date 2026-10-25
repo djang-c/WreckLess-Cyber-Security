@@ -9,6 +9,7 @@
 # Usage: scripts/serve_models.sh [all|blue|red|victim]
 #   runtime: VLLM_RUNTIME=docker (NGC image, default when present) | pip (.venv-vllm)
 #   stop:    scripts/serve_models.sh stop
+#   swap:    scripts/serve_models.sh swap <blue|red|victim> <model dir or repo>   (unload, load another on that port)
 #   install: scripts/serve_models.sh install   (re)build .venv-vllm from scripts/vllm-requirements.lock
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -31,7 +32,7 @@ fi
 
 # Triton JIT-compiles a C helper against Python.h at startup. Without python3.12-dev installed
 # (needs root), unpack the matching headers into the venv instead: apt-get download needs no root.
-if [[ $VLLM_RUNTIME == pip && ! -f /usr/include/python3.12/Python.h ]]; then
+if [[ $VLLM_RUNTIME == pip && ! -f /usr/include/python3.12/Python.h ]] && command -v apt-get >/dev/null; then
   SYSROOT=$PWD/.venv-vllm/sysroot
   if [[ ! -f $SYSROOT/usr/include/python3.12/Python.h ]]; then
     tmp=$(mktemp -d); (cd "$tmp" && apt-get download -q python3.12-dev libpython3.12-dev >/dev/null)
@@ -42,30 +43,34 @@ fi
 # JIT kernel builds (flashinfer, torch extensions) call `ninja`, installed in the venv
 [[ $VLLM_RUNTIME == pip ]] && export PATH=$PWD/.venv-vllm/bin:$PATH
 
+stop_one() {  # our server for one role name: pidfile (pip runtime), container, log follower
+  local n=$1
+  if [[ -f logs/vllm_$n.pid ]]; then kill "$(cat "logs/vllm_$n.pid")" 2>/dev/null || true; rm -f "logs/vllm_$n.pid"; fi
+  D docker rm -f "wl-vllm-$n" >/dev/null 2>&1 || true
+  pkill -f "docker logs -f wl-vllm-$n\$" 2>/dev/null || true
+}
+
 if [[ ${1:-} == stop ]]; then
   # only our servers: pidfiles from the pip runtime, our containers, our log followers
-  for n in blue red victim; do
-    if [[ -f logs/vllm_$n.pid ]]; then kill "$(cat "logs/vllm_$n.pid")" 2>/dev/null || true; rm -f "logs/vllm_$n.pid"; fi
-    D docker rm -f "wl-vllm-$n" >/dev/null 2>&1 || true
-    pkill -f "docker logs -f wl-vllm-$n\$" 2>/dev/null || true
-  done
+  for n in blue red victim; do stop_one "$n"; done
   echo "stopped"; exit 0
 fi
 
-# model <role>: "port names util parser dir" from scripts/models.tsv
+# model <role>: "port names util parser dir extra" from scripts/models.tsv (extra: comma-joined flags or -)
 model() {
-  awk -v r="$1" '$1 == r {n = split($6, a, "/"); print $2, $3, $4, $5, a[n]; f = 1} END {exit !f}' scripts/models.tsv \
+  awk -v r="$1" '$1 == r {n = split($6, a, "/"); print $2, $3, $4, $5, a[n], ($8 == "" ? "-" : $8); f = 1} END {exit !f}' scripts/models.tsv \
     || { echo "no role $1 in scripts/models.tsv" >&2; exit 1; }
 }
 
-serve() {  # name role (row of scripts/models.tsv)
-  local name=$1 port names util parser model
-  read -r port names util parser model < <(model "$2")
-  # shellcheck disable=SC2206  # EXTRA is a flag list on purpose
+# start <name> <port> <names> <util> <parser> <dir> <extra>; returns 1 if it died or timed out
+start() {
+  local name=$1 port=$2 names=$3 util=$4 parser=$5 model=$6 extra=$7
+  [[ $extra == - ]] && extra=""
+  # shellcheck disable=SC2206  # EXTRA and the row's extra flags are flag lists on purpose
   local args=(--served-model-name ${names//,/ } --host 127.0.0.1 --port "$port"
               --gpu-memory-utilization "$util"
               --max-model-len 16384 --max-num-seqs 4 --kv-cache-dtype fp8
-              --enable-auto-tool-choice --tool-call-parser "$parser" $EXTRA)
+              --enable-auto-tool-choice --tool-call-parser "$parser" ${extra//,/ } $EXTRA)
   echo "[$(date +%T)] starting $name on :$port ($model, util=$util, $VLLM_RUNTIME)"
   if [[ $VLLM_RUNTIME == docker ]]; then
     D docker rm -f "wl-vllm-$name" >/dev/null 2>&1 || true
@@ -80,13 +85,41 @@ serve() {  # name role (row of scripts/models.tsv)
     echo "$pid" > "logs/vllm_$name.pid"
     alive() { kill -0 "$pid" 2>/dev/null; }
   fi
-  for _ in $(seq 1 240); do
-    curl -sf "http://127.0.0.1:$port/v1/models" >/dev/null && { echo "  $name ready"; return; }
-    alive || { echo "  $name DIED — see logs/vllm_$name.log"; tail -20 "logs/vllm_$name.log"; exit 1; }
-    sleep 5
+  for _ in $(seq 1 "${READY_TRIES:-240}"); do
+    curl -sf "http://127.0.0.1:$port/v1/models" >/dev/null && { echo "  $name ready"; return 0; }
+    alive || { echo "  $name DIED — see logs/vllm_$name.log"; tail -20 "logs/vllm_$name.log"; return 1; }
+    sleep "${READY_SLEEP:-5}"
   done
-  echo "  $name timed out"; exit 1
+  echo "  $name timed out"; return 1
 }
+
+serve() {  # name role (row of scripts/models.tsv)
+  local port names util parser model extra
+  read -r port names util parser model extra < <(model "$2")
+  start "$1" "$port" "$names" "$util" "$parser" "$model" "$extra" || exit 1
+}
+
+# swap <role> <checkpoint dir or repo>: unload the role's model, load another on the same port and
+# served names (the pipeline sees no change), keep the new row's util/parser/extra flags.
+# If the new model dies or never answers, the role's own model is started again and swap exits 1.
+if [[ ${1:-} == swap ]]; then
+  role=${2:?usage: serve_models.sh swap <blue|red|victim> <model dir or repo>} want=${3:?model dir or repo}
+  read -r port names _ _ cur _ < <(model "$role")
+  row=$(awk -v w="$want" '!/^#/ && NF >= 7 {n = split($6, a, "/"); if (a[n] == w || $6 == w) {print $4, $5, a[n], ($8 == "" ? "-" : $8); f = 1; exit}} END {exit !f}' scripts/models.tsv) \
+    || { echo "no model $want in scripts/models.tsv" >&2; exit 1; }
+  read -r util parser dir extra <<<"$row"
+  [[ $util != - && $parser != - ]] || { echo "$dir has no util/tool_parser in scripts/models.tsv" >&2; exit 1; }
+  [[ -d models/$dir ]] || { echo "models/$dir not downloaded (scripts/download_models.sh)" >&2; exit 1; }
+  echo "[$(date +%T)] swap $role (:$port): unloading $cur"
+  stop_one "$role"
+  if start "$role" "$port" "$names" "$util" "$parser" "$dir" "$extra"; then
+    echo "SWAPPED $role → $dir"; exit 0
+  fi
+  echo "swap failed: restoring $cur on :$port"
+  stop_one "$role"
+  serve "$role" "$role"
+  exit 1
+fi
 
 target=${1:-all}
 if [[ $target == all || $target == blue ]]; then
@@ -95,4 +128,4 @@ fi
 if [[ $target == all || $target == red ]]; then serve red red; fi
 if [[ $target == all || $target == victim ]]; then serve victim victim; fi
 nvidia-smi --query-gpu=memory.used --format=csv 2>/dev/null || true
-free -g | head -2
+free -g 2>/dev/null | head -2 || true   # Linux only

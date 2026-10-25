@@ -95,3 +95,17 @@ def test_load_env_sets_missing_names_only(tmp_path, monkeypatch):
     for k in ("A_TOKEN", "B_QUOTED"):
         monkeypatch.delenv(k)
     assert load_env(tmp_path / "missing") == []
+
+
+def test_load_env_drops_inline_comments_like_the_shell(tmp_path, monkeypatch):
+    """Regression 2026-10-25: `export R=owner/repo   # note` kept the comment in the value, so the
+    daemon (load_env) and an interactive shell (`source .env`) saw different settings."""
+    from wreckless.config import load_env
+    f = tmp_path / ".env"
+    f.write_text("export R=owner/repo   # Approve -> draft PR\nH='a # b'\nU=x#y\n")
+    for k in ("R", "H", "U"):
+        monkeypatch.delenv(k, raising=False)
+    load_env(f)
+    assert os.environ["R"] == "owner/repo" and os.environ["H"] == "a # b" and os.environ["U"] == "x#y"
+    for k in ("R", "H", "U"):
+        monkeypatch.delenv(k)

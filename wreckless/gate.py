@@ -114,29 +114,37 @@ def verify(script: Path, victim: Path, enclave: Enclave, extra_args: list[str] =
     finally:
         shutil.rmtree(arena, ignore_errors=True)
 
-    last = res[vulns[-1]]
-    for t in vulns:
-        r = res[t]
-        if not r.hit:
-            return Verdict(False, "oracle not reached", r, kind)
-        if r.violation:
-            return Verdict(False, "the exploit tripped the enclave guard", r, kind)
-        if r.via_victim is None:
-            return Verdict(False, "nonce written by the exploit script itself, not via victim code", r, kind)
-    if res[ctl].hit:
-        return Verdict(False, f"oracle also reached on the {kind} control: not caused by the target flaw",
-                       res[ctl], kind)
-    sites = {_site(res[t], t) for t in vulns}
-    if flaw and sites != {flaw}:
-        return Verdict(False, f"oracle written from {', '.join(sorted(sites))}, not the flawed code path "
-                              f"({flaw})", last, kind, flaw_site=flaw)
+    def decide() -> Verdict:
+        last = res[vulns[-1]]
+        for t in vulns:
+            r = res[t]
+            if not r.hit:
+                return Verdict(False, "oracle not reached", r, kind)
+            if r.violation:
+                return Verdict(False, "the exploit tripped the enclave guard", r, kind)
+            if r.via_victim is None:
+                return Verdict(False, "nonce written by the exploit script itself, not via victim code", r, kind)
+        if res[ctl].hit:
+            return Verdict(False, f"oracle also reached on the {kind} control: not caused by the target flaw",
+                           res[ctl], kind)
+        sites = {_site(res[t], t) for t in vulns}
+        if flaw and sites != {flaw}:
+            return Verdict(False, f"oracle written from {', '.join(sorted(sites))}, not the flawed code path "
+                                  f"({flaw})", last, kind, flaw_site=flaw)
 
-    site = next(iter(sites))
-    if flaw:
-        ui.say("gate", f"oracle reached via \033[1m{site}\033[0m on every run, not on the {kind} control → VERIFIED")
-        return Verdict(True, f"oracle written from {site} (the flawed path); blocked on the {kind} control",
-                       last, kind, "verified", flaw)
-    ui.say("gate", f"oracle reached via \033[1m{site}\033[0m, not on the {kind} control → "
-                   f"REACHABLE (flaw unconfirmed: no reference exploit to confirm the flawed path)")
-    return Verdict(True, f"oracle written from {site}; blocked on the {kind} control; flawed path unconfirmed",
-                   last, kind, "reachable", "")
+        site = next(iter(sites))
+        if flaw:
+            ui.say("gate", f"oracle reached via \033[1m{site}\033[0m on every run, not on the {kind} control → VERIFIED")
+            return Verdict(True, f"oracle written from {site} (the flawed path); blocked on the {kind} control",
+                           last, kind, "verified", flaw)
+        ui.say("gate", f"oracle reached via \033[1m{site}\033[0m, not on the {kind} control → "
+                       f"REACHABLE (flaw unconfirmed: no reference exploit to confirm the flawed path)")
+        return Verdict(True, f"oracle written from {site}; blocked on the {kind} control; flawed path unconfirmed",
+                       last, kind, "reachable", "")
+
+    v = decide()
+    rows = [{"n": n, "copy": "control" if t == ctl else "vulnerable", "hit": res[t].hit,
+             "site": _site(res[t], t) if res[t].via_victim else None, "violation": bool(res[t].violation)}
+            for n, t in enumerate(order, 1)]
+    ui.gate_report(script.name, kind, flaw, rows, v.passed, v.strength, v.reason)
+    return v

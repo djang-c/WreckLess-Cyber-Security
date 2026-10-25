@@ -1,4 +1,5 @@
 """Runtime configuration. Every endpoint is loopback: inference never leaves the box."""
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,8 @@ def load_env(path: Path | None = None) -> list[str]:
             continue
         if len(val) > 1 and val[0] == val[-1] and val[0] in "\"'":
             val = val[1:-1]
+        elif " #" in val or "\t#" in val:  # unquoted: a whitespace-led # starts a comment, as in sh
+            val = val.split(" #", 1)[0].split("\t#", 1)[0].rstrip()
         os.environ[key] = val
         names.append(key)
     return names
@@ -41,11 +44,39 @@ class ModelEndpoint:
     model: str
 
 
+def routes_path() -> Path:
+    """The TUI Models tab's choices: {"red": {"url", "model"}, ...}. Env vars still win."""
+    return Path(os.environ.get("WRECKLESS_MODEL_ROUTES") or RUNS / "model_routes.json")
+
+
+def routes() -> dict:
+    try:
+        data = json.loads(routes_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict) and v.get("url") and v.get("model")} \
+        if isinstance(data, dict) else {}
+
+
 def _ep(role: str, port: int, name: str) -> ModelEndpoint:
+    """WRECKLESS_<ROLE>_URL/_MODEL > the routes file > the GB10 default port and served name."""
+    r = routes().get(role.lower(), {})
+    url_k, model_k = f"WRECKLESS_{role}_URL", f"WRECKLESS_{role}_MODEL"
     return ModelEndpoint(
-        url=os.environ.get(f"WRECKLESS_{role}_URL", f"http://127.0.0.1:{port}/v1"),
-        model=os.environ.get(f"WRECKLESS_{role}_MODEL", name),
+        url=os.environ[url_k] if url_k in os.environ else r.get("url", f"http://127.0.0.1:{port}/v1"),
+        model=os.environ[model_k] if model_k in os.environ else r.get("model", name),
     )
+
+
+ROUTED = {"red": ("RED", 8000, "red"), "blue": ("BLUE", 8001, "blue"), "victim": ("VICTIM", 8002, "victim")}
+
+
+def rerouted(s: "Settings") -> "Settings":
+    """`s` with each role that has a routes-file entry re-read, so a long-running daemon picks up a
+    model switched in the TUI at its next item. Roles without an entry are left exactly as they are."""
+    from dataclasses import replace
+    r = routes()
+    return replace(s, **{k: _ep(*ROUTED[k]) for k in ROUTED if k in r}) if r else s
 
 
 @dataclass

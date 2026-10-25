@@ -7,7 +7,14 @@ readme = "README.md"
 requires-python = ">=3.12"
 # pytest stays a runtime dependency: without an OpenShell gateway the userland enclave runs the
 # held-out tests and Blue's run_pytest with this interpreter (`sys.executable -m pytest`).
-dependencies = ["openai>=1.40", "pytest>=8", "rich>=13", "slack_sdk>=3.27", "aiohttp>=3.9"]
+dependencies = [
+    "openai>=1.40",
+    "pytest>=8",
+    "rich>=13",
+    "slack_sdk>=3.27",
+    "aiohttp>=3.9",
+    "textual>=1.0",
+]
 
 [project.optional-dependencies]
 slack = ["slack-bolt>=1.20"]

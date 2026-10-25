@@ -1,6 +1,6 @@
 # One source of truth for scripts/download_models.sh and scripts/serve_models.sh.
 # Download order is file order (victim + red first: smallest, needed earliest).
-# role           port  served_names        util  tool_parser  repo                                                revision
+# role           port  served_names        util  tool_parser  repo                                                revision  [extra vLLM flags, comma-joined]
 # role "-": downloaded, not served. Revisions pin what is on the GB10 now; "main" = TODO pin.
 victim           8002  victim              0.08  hermes       Qwen/Qwen2.5-Coder-7B-Instruct-AWQ                   8e8ed243bbe6f9a5aff549a0924562fc719b2b8a
 red              8000  red                 0.20  qwen3_coder  cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit       cb67b41c4b82fb25d52fbfc1837e7cae9d3fe305
@@ -8,4 +8,7 @@ red              8000  red                 0.20  qwen3_coder  cyankiwi/Qwen3-Cod
 blue             8001  blue                0.45  qwen3_coder  cyankiwi/Qwen3-Coder-Next-AWQ-4bit                   c92cabfad08cadb011dc169cabb3e6da621b0719
 # BLUE_FALLBACK=1: answers to both names, so Settings.blue and Settings.blue_fallback resolve
 blue-fallback    8001  blue,blue-fallback  0.30  hermes       Qwen/Qwen2.5-Coder-32B-Instruct-AWQ                  1ed0a6145da0ce550c628e8e8b678f51e695995d
--                -     -                   -     -            RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8   bff279eb543e15f7c0e3f922661e66a1b78ac2e0
+# Swap-in only (`serve_models.sh swap <role> NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8`, or the TUI Models tab).
+# util/parser/flags from the model card's vLLM command (huggingface.co/RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8,
+# read 2026-10-25); not yet served on the GB10: UNVERIFIED there.
+-                -     -                   0.30  qwen3_coder  RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8   bff279eb543e15f7c0e3f922661e66a1b78ac2e0  --reasoning-parser,nemotron_v3,--mamba-ssm-cache-dtype,float16
