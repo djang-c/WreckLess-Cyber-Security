@@ -14,17 +14,29 @@ from wreckless.sandbox import Enclave
 from wreckless.state import StateMachine
 
 
+class _TracedStateMachine(StateMachine):
+    """Display-only hook: print each persisted transition (replay renders the same lines)."""
+    def advance(self, new: str, actor: str, payload: dict | None = None) -> None:
+        super().advance(new, actor, payload)
+        h = self.doc["history"][-1]
+        ui.transition(h["from"], h["to"], h["actor"])
+
+
 def run(cve: str, s: Settings, runs_dir: Path = RUNS) -> dict:
     t0 = time.time()
     run_id = f"{cve}-{time.strftime('%Y%m%d-%H%M%S')}"
     run_dir = (runs_dir / run_id).resolve()
     run_dir.mkdir(parents=True)
-    sm, slack = StateMachine(run_dir, run_id), Notifier()
+    sm, slack = _TracedStateMachine(run_dir, run_id), Notifier()
     enclave = Enclave(run_dir, sys.executable)
-    ui.banner(f"WreckLess · {cve} · {s.mode} mode{' · demo' if s.demo_mode else ''}")
+    title = f"WreckLess · {cve} · {s.mode} mode{' · demo' if s.demo_mode else ''}"
+    (run_dir / "ui_meta.json").write_text(json.dumps({"banner": title, "t0": t0}))
+    ui.banner(title)
+    ui.mascot("core")
     ui.say("core", f"run {run_id} · enclave backend: {enclave.backend}")
 
     # Purple: intel
+    ui.mascot("purple")
     intel = purple.ingest(cve, s)
     (run_dir / "intel.json").write_text(json.dumps(intel, indent=2))
     sm.advance("INTEL_READY", "purple", {"cve": cve})
@@ -34,6 +46,7 @@ def run(cve: str, s: Settings, runs_dir: Path = RUNS) -> dict:
     src = run_dir / "victim-src"
     commit = init_victim(TARGETS / "victim_app", src)
     red_wt = worktree(src, run_dir / "wt-red", f"red/{cve}")
+    ui.mascot("red")
     sm.advance("EXPLOITING", "red", {"commit": commit})
     outcome = red.attack(intel, red_wt, enclave, run_dir, s)
     if not outcome:
@@ -51,20 +64,19 @@ def run(cve: str, s: Settings, runs_dir: Path = RUNS) -> dict:
     report_path.write_text(json.dumps(report, indent=2))
     sm.artifact("vulnerability_report", report_path)
     sm.advance("EXPLOIT_VERIFIED", "red", {"report": str(report_path)})
-    ui.say("red", f"\033[41;97m EXPLOIT VERIFIED \033[0m {outcome.script.name} ({outcome.source})")
+    ui.intrusion(outcome.script.name, outcome.source)
     slack.send("red", f"🚨 Intrusion reproduced: {cve}",
                f"Commit `{commit[:10]}` exploitable.\n```{outcome.output[-600:]}```")
 
     # Blue: patch in a separate worktree, then orchestrator-run held-out validation
     sm.advance("PATCHING", "blue", {"report": str(report_path)})
+    ui.mascot("blue")
     blue_wt = worktree(src, run_dir / "wt-blue", f"wreckless/fix-{cve}")
     diff, source = blue.defend(report, blue_wt, enclave, run_dir, s)
     (run_dir / "fix.patch").write_text(diff)
-    ui.detail("blue", diff, limit=1500)
+    ui.diff("blue", diff, limit=1500)
     v = blue.validate(cve, blue_wt, enclave, report)
-    ui.say("blue", f"held-out regression: {'PASS' if v.regression else 'FAIL'} · "
-                   f"functional: {'PASS' if v.functional else 'FAIL'} · "
-                   f"exploit blocked: {'YES' if v.exploit_blocked else 'NO'}")
+    ui.scoreboard(v.regression, v.functional, v.exploit_blocked)
     (run_dir / "validation.json").write_text(json.dumps(v.logs, indent=2))
     if not v.ok:
         sm.advance("PATCH_FAILED", "blue", {"validation": v.__dict__ | {"logs": None}})
@@ -75,12 +87,14 @@ def run(cve: str, s: Settings, runs_dir: Path = RUNS) -> dict:
                                      f"Patch source: {source}. Validated by WreckLess.")
     sm.advance("PATCH_VALIDATED", "blue", {"branch": f"wreckless/fix-{cve}", "commit": fix_commit,
                                            "source": source})
+    ui.patch_validated(f"wreckless/fix-{cve}", fix_commit, source)
     elapsed = time.time() - t0
     via = slack.send("blue", f"✅ Draft PR Ready: {cve}",
                      f"Branch `wreckless/fix-{cve}` @ `{fix_commit[:10]}` · patch: {source}\n"
                      f"Held-out regression ✅ · functional ✅ · exploit blocked ✅ · {elapsed:.0f}s\n"
                      f"```{diff[:1500]}```")
     sm.advance("NOTIFIED", "core", {"channel": via, "elapsed_s": round(elapsed, 1)})
+    ui.notified(via)
     ui.say("core", f"done in {elapsed:.1f}s → {run_dir}")
     return sm.doc
 
@@ -94,7 +108,14 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--demo-mode", action="store_true", help="N=1, temp 0, cached fallback")
     r.add_argument("--no-llm", action="store_true", help="scripted run with cached exploit/patch")
     r.add_argument("--agentic", action="store_true", help="exploit via prompt injection into victim LLM")
+    rp = sub.add_parser("replay", help="replay a finished run from its state.json (stage safety net)")
+    rp.add_argument("run_dir", type=Path)
+    rp.add_argument("--speed", type=float, default=1.0, help="time scale; 2 = twice as fast, 0 = instant")
+    rp.add_argument("--max-gap", type=float, default=0.0, help="cap any single pause (s); 0 = no cap")
     a = ap.parse_args(argv)
+    if a.cmd == "replay":
+        from wreckless.replay import replay
+        return replay(a.run_dir, speed=a.speed, max_gap=a.max_gap)
     s = Settings(mode=a.mode, demo_mode=a.demo_mode, use_llm=not a.no_llm, agentic_exploit=a.agentic)
     if a.demo_mode:
         s.max_agent_steps = 8
