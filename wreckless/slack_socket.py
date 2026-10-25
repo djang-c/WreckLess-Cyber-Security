@@ -376,6 +376,8 @@ def start_listener(on_approve: Decision | None = None, on_reject: Decision | Non
 
 
 def main() -> int:
+    from wreckless.config import load_env
+    load_env()
     if "--check" in sys.argv[1:]:
         ok, rows = preflight()
         print_preflight(ok, rows)

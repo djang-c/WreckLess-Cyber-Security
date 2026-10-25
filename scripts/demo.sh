@@ -10,6 +10,7 @@
 # This script never runs sudo silently: it prints the exact command and asks first.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+[[ -f .env ]] && { set -a; . ./.env; set +a; }   # Slack tokens; shell values set before this are overwritten, so unset them to test without
 
 RUNG="${1:-demo}"
 CVE="${CVE:-CVE-2024-21513}"

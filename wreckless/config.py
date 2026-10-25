@@ -12,6 +12,29 @@ RUNS = ROOT / "runs"
 INTEL_DB = Path(os.environ.get("WRECKLESS_INTEL_DB", RUNS / "intel.db"))
 
 
+def load_env(path: Path | None = None) -> list[str]:
+    """Load KEY=VALUE lines from ``.env`` (``export`` prefix and quotes allowed) into the process
+    environment. Variables already set win, so a shell override still works. Returns the names
+    it set, never the values."""
+    path = path or Path(os.environ.get("WRECKLESS_ENV_FILE") or ROOT / ".env")
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    names = []
+    for line in lines:
+        line = line.strip().removeprefix("export ").strip()
+        key, sep, val = line.partition("=")
+        key, val = key.strip(), val.strip()
+        if line.startswith("#") or not sep or not key.isidentifier() or key in os.environ:
+            continue
+        if len(val) > 1 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        os.environ[key] = val
+        names.append(key)
+    return names
+
+
 @dataclass(frozen=True)
 class ModelEndpoint:
     url: str
