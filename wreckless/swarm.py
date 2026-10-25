@@ -15,7 +15,7 @@ from wreckless import targets
 from wreckless.config import BENCHMARKS, INTEL_DB, Settings
 from wreckless.events import EventLog
 from wreckless.kb import IntelDB
-from wreckless.gitops import commit_all, init_victim, worktree
+from wreckless.gitops import commit_all, git, init_victim, worktree
 from wreckless.notify import Notifier
 from wreckless.sandbox import Enclave
 
@@ -60,11 +60,13 @@ class Swarm:
         return Enclave(d, self.target.python, image=self.target.image)
 
     # ---------- producers ----------
-    def submit_cve(self, cve: str) -> str:
+    def submit_cve(self, cve: str, claim: str | None = None) -> str:
+        """Ingest + enqueue. ``claim`` takes the item into verifying atomically (hero runs)."""
         self.events.item.id = None
         ui.mascot("purple")
         intel = purple.ingest(cve, self.s, self.intel, self.target.source)
-        item_id = self.queue.enqueue("purple", intel["summary"], cve=cve, payload={"intel": intel})
+        item_id = self.queue.enqueue("purple", intel["summary"], cve=cve, payload={"intel": intel},
+                                     claim=claim)
         ui.say("purple", f"{item_id} queued as \033[1mPREDICTION\033[0m")
         return item_id
 
@@ -76,62 +78,91 @@ class Swarm:
             if self.hero_active():          # the hero beat owns the GPU; poll again shortly
                 self.stop.wait(5)
                 continue
-            if self.s.mode == "live":
-                ui.say("purple", f"polling feeds for {', '.join(f'{n}@{v}' for n, v in inv['packages'].items())}")
-                ui.say("purple", "feeds: " + feeds.sync(self.intel, inv, self.s).line())
-            keys = [a.parent.name for a in sorted(BENCHMARKS.glob("*/advisory.json"))]
-            keys += [a["key"] for a in self.intel.relevant()]
+            try:
+                if self.s.mode == "live":
+                    ui.say("purple", f"polling feeds for {', '.join(f'{n}@{v}' for n, v in inv['packages'].items())}")
+                    ui.say("purple", "feeds: " + feeds.sync(self.intel, inv, self.s).line())
+                keys = [a.parent.name for a in sorted(BENCHMARKS.glob("*/advisory.json"))]
+                keys += [a["key"] for a in self.intel.relevant()]
+            except Exception as e:  # a feed outage must not kill the producer thread
+                ui.say("purple", f"feed poll failed: {type(e).__name__}: {e}")
+                keys = []
             for cve in dict.fromkeys(keys):
                 if self.stop.is_set():
                     break
-                if not self.queue.has_cve(cve):
-                    self.submit_cve(cve)
+                try:
+                    if not self.queue.has_cve(cve):
+                        self.submit_cve(cve)
+                except Exception as e:  # one bad advisory must not kill the producer thread
+                    ui.say("purple", f"{cve} not queued: {type(e).__name__}: {e}")
             self.stop.wait(interval)
+
+    def _new_hunt_dir(self) -> tuple[int, Path]:
+        """Next free hunts/pass-NNNN, continuing after any left by an earlier run."""
+        root = self.home / "hunts"
+        root.mkdir(parents=True, exist_ok=True)
+        taken = [int(p.name[5:]) for p in root.glob("pass-*") if p.name[5:].isdigit()]
+        n = max(taken, default=0)
+        while True:
+            n += 1
+            d = root / f"pass-{n:04d}"
+            try:
+                d.mkdir()       # atomic: another daemon on this home can't take the same pass
+                return n, d
+            except FileExistsError:
+                continue
 
     def red_hunt_loop(self, pause: float = 5.0) -> None:
         """Continuous: propose candidate flaws. Yields to the hero item (bandwidth on one GPU)."""
-        n = 0
         while not self.stop.is_set():
             if self.hero_active():
                 self.stop.wait(pause)
                 continue
-            n += 1
-            d = self.home / "hunts" / f"pass-{n:04d}"
-            d.mkdir(parents=True, exist_ok=True)
-            wt = d / "victim"
-            init_victim(self.target.source, wt)
-            enclave = self._enclave(d)
             try:
-                prop = red.hunt(wt, enclave, d, self.s)
-            finally:
-                enclave.close()
-            if prop:
-                item_id = self.queue.enqueue("red-hunt", prop.title, payload={
-                    "hunt_dir": str(d), "script": str(prop.script), "file": prop.file,
-                    "hypothesis": prop.hypothesis})
-                ui.say("red", f"hunt pass {n}: candidate {item_id} \033[1mPREDICTION\033[0m — {prop.title}")
+                self._hunt_pass()
+            except Exception as e:  # one failed pass must not kill the hunt thread
+                ui.say("red", f"hunt pass crashed: {type(e).__name__}: {e}")
             if self.s.use_llm is False:
                 return  # nothing to hunt with
             self.stop.wait(pause)
 
+    def _hunt_pass(self) -> None:
+        n, d = self._new_hunt_dir()
+        wt = d / "victim"
+        init_victim(self.target.source, wt)
+        enclave = self._enclave(d)
+        try:
+            prop = red.hunt(wt, enclave, d, self.s)
+        finally:
+            enclave.close()
+        if prop:
+            item_id = self.queue.enqueue("red-hunt", prop.title, payload={
+                "hunt_dir": str(d), "script": str(prop.script), "file": prop.file,
+                "hypothesis": prop.hypothesis})
+            ui.say("red", f"hunt pass {n}: candidate {item_id} \033[1mPREDICTION\033[0m — {prop.title}")
+
     # ---------- the per-item lifecycle ----------
-    def process(self, item_id: str) -> str:
+    def process(self, item_id: str, claimed: bool = False) -> str:
+        """Run one item. ``claimed``: the caller already moved it to verifying atomically."""
         self.events.item.id = item_id
         # claim before touching disk: an unclaimed item belongs to someone else (maybe the hero)
-        if not self.queue.try_advance(item_id, "verifying", "gate"):
+        if not claimed and not self.queue.try_advance(item_id, "verifying", "gate"):
             return "skipped"  # another worker or process claimed it first
         d = self.home / "items" / item_id.replace("#", "-")
         d.mkdir(parents=True, exist_ok=True)
         enclave = self._enclave(d)
         try:
             return self._process(item_id, d, enclave)
+        except Exception as e:  # we own this item: never leave it stuck in flight
+            self.queue.fail(item_id, "core", f"crashed: {type(e).__name__}: {e}"[:300])
+            raise
         finally:
             enclave.close()
 
     def _process(self, item_id: str, d: Path, enclave: Enclave) -> str:
         item = self.queue.get(item_id)
         src = d / "victim-src"
-        commit = init_victim(self.target.source, src)
+        init_victim(self.target.source, src)
         t0 = time.time()
 
         # verifying: Red proposes (if needed), the gate disposes
@@ -142,16 +173,19 @@ class Swarm:
             script, source = (prop.script, prop.source) if prop else (None, None)
         else:
             script, source = Path(item.payload["script"]), "llm"
-        args = ["--agentic"] if self.s.agentic_exploit else []
         if script:
             ui.mascot("gate")
         bench = self.target.bench(item.cve)   # this target's own reference fix + exploit, if any
         kg = bench / "known_good" if bench else None
-        verdict = gate.verify(script, red_wt, enclave, args, red._victim_env(self.s),
+        verdict = gate.verify(script, red_wt, enclave, red.exploit_args(self.s), red.victim_env(self.s),
                               reference_patch=kg / "fix.patch" if kg else None,
                               reference_exploit=kg / "repro_exploit.py" if kg else None) if script else None
+        # Red may have checked out another commit: the report must name what the gate ran on.
+        commit = git(red_wt, "rev-parse", "HEAD")
+        reason = verdict.reason if verdict else "no exploit proposed"
+        if verdict and verdict.passed and git(red_wt, "status", "--porcelain", "--untracked-files=no"):
+            verdict, reason = None, "victim worktree was modified during verification"
         if not verdict or not verdict.passed:
-            reason = verdict.reason if verdict else "no exploit proposed"
             self.queue.advance(item_id, "rejected", "gate", reason=reason)
             ui.say("gate", f"{item_id} REJECTED — {reason}")
             return "rejected"
@@ -183,7 +217,7 @@ class Swarm:
         diff, patch_source = blue.defend(report, blue_wt, enclave, d, self.s, self.target)
         (d / "fix.patch").write_text(diff)
         ui.diff("blue", diff or "(no diff)", limit=1500)
-        v = blue.validate(blue_wt, enclave, report, self.target)
+        v = blue.validate(blue_wt, enclave, report, self.target, self.s)
         ui.scoreboard(v.regression, v.functional, v.exploit_blocked, v.hardening)
         (d / "validation.json").write_text(json.dumps(v.logs, indent=2))
         if not diff or not v.ok:
@@ -216,20 +250,20 @@ class Swarm:
     def run_hero(self, cve: str) -> str:
         """The demo critical path: one item, background hunting paused."""
         with self.hero_lock():
-            return self.process(self.submit_cve(cve))
+            # enqueued already claimed: a daemon worker can never pick the hero's item
+            return self.process(self.submit_cve(cve, claim="gate"), claimed=True)
 
     def worker_loop(self) -> None:
         while not self.stop.is_set():
-            # the hero lock is taken before its item is enqueued, so this also keeps us off it
-            item_id = None if self.hero_active() else self.queue.next_queued()
+            # pick + claim in one transaction: no other worker or hero can take it in between
+            item_id = None if self.hero_active() else self.queue.claim_next("gate")
             if not item_id:
                 self.stop.wait(2)
                 continue
             try:
-                self.process(item_id)
+                self.process(item_id, claimed=True)   # fails the item itself if it crashes
             except Exception as e:  # one bad item must not kill the worker thread
                 ui.say("core", f"{item_id} crashed: {type(e).__name__}: {e}")
-                self.queue.fail(item_id, "core", f"crashed: {type(e).__name__}: {e}"[:300])
 
     def liveness(self) -> str:
         st, up = self.queue.stats(), int(time.time() - self.started)
