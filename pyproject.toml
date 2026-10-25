@@ -1,0 +1,15 @@
+[project]
+name = "wreckless"
+version = "0.1.0"
+description = "Always-on local-first agentic SecOps swarm (Purple/Red/Blue) for Dell Pro Max GB10"
+requires-python = ">=3.12"
+dependencies = ["openai>=1.40", "pytest>=8"]
+
+[project.scripts]
+wreckless = "wreckless.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["wreckless*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
