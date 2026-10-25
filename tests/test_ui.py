@@ -168,11 +168,12 @@ def test_replay_banner_shows_recording_date_and_age(tmp_path, capsys, monkeypatc
 
 
 def test_replay_mode_is_reset_even_if_replay_crashes(tmp_path, capsys, monkeypatch):
-    from wreckless.events import replay
+    from wreckless import events
     path = _record_one(tmp_path, monkeypatch)
-    path.write_text(path.read_text() + "{not json\n")
-    with pytest.raises(json.JSONDecodeError):
-        replay(path, speed=0)
+    # bad lines are skipped now, so crash the renderer itself
+    monkeypatch.setattr(events, "_render", lambda ev: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        events.replay(path, speed=0)
     capsys.readouterr()
     ui.say("core", "live again")
     assert "REPLAY" not in capsys.readouterr().out
