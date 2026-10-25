@@ -183,16 +183,17 @@ def intrusion(item: str, script: str, source: str, strength: str | None = "verif
             _out(body.center(w))
             _out("!" * w)
         return
+    body = strip_ansi(body)  # item/script/source are untrusted; also keeps len() == visible width
     lines = [" " * w, title.center(w), body[:w].center(w), " " * w]
     with _LOCK:  # the flash moves the cursor up; no other thread may print in between
         for i in range(3 if _animate() else 0):
             style = ON_RED if i % 2 == 0 else "\033[7;31;1m"
             for ln in lines:
-                print(f"{style}{ln}{RESET}", flush=True)
+                print(sanitize(f"{style}{ln}{RESET}"), flush=True)
             time.sleep(0.12)
             print(f"\033[{len(lines)}F", end="", flush=True)
         for ln in lines:
-            print(f"{ON_RED}{ln}{RESET}", flush=True)
+            print(sanitize(f"{ON_RED}{ln}{RESET}"), flush=True)
 
 
 def diff(role: str, text: str, limit: int = 1500, _record: bool = True) -> None:
