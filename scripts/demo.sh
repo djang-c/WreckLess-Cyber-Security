@@ -21,14 +21,17 @@ info() { printf '  \033[2m·\033[0m %s\n' "$*"; }
 beat() { printf '\n\033[1;36m── BEAT %s ──\033[0m\n' "$*"; }
 ask()  { local a; read -r -p "$1 [y/N] " a; [[ "$a" =~ ^[Yy]$ ]]; }
 
-# prints "<events.jsonl> <item>" for the newest item that reached `notified`
+# prints "<events.jsonl> <item>" for the newest item of $CVE that reached `notified`
+# (any CVE would let the safety net replay a different bug than the one on stage)
 last_good_run() {
-  uv run python - <<'EOF'
-import json, pathlib
+  CVE="$CVE" uv run python - <<'EOF'
+import json, os, pathlib
+cve = os.environ["CVE"]
 logs = sorted(pathlib.Path("runs").glob("**/events.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
 for p in logs:
     done = [e["item"] for e in map(json.loads, p.read_text().splitlines())
-            if e.get("kind") == "transition" and e.get("to") == "notified"]
+            if e.get("kind") == "transition" and e.get("to") == "notified"
+            and str(e.get("item", "")).startswith(cve + "#")]
     if done:
         print(f"{p}\t{done[-1]}"); break   # tab: the path may contain spaces
 EOF

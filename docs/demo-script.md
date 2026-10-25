@@ -22,9 +22,17 @@ Honesty rule for the presenter: say only what the screen shows. If the terminal 
 | 5 Slack | 3:20–4:00 | 40 s | "Fix branch ready (local, pending review)" card in Slack (or the outbox line, if Slack is down) |
 
 Live-LLM wall time on the GB10 per beat: `UNVERIFIED` — measure in rehearsal and fill in.
-Scripted (`--no-llm`) pipeline time measured on a Mac laptop: ~1.1 s total (the beats then run
-on talk time; scroll back to each beat). Replay reproduces the recorded run's original pacing
-(`REPLAY_SPEED=2 scripts/demo.sh replay` halves it).
+Scripted (`--no-llm`) machine time, measured 2026-10-25 on a Mac laptop (M-series, userland guard):
+
+| Run | Wall time |
+|---|---|
+| `scripts/demo.sh scripted` (victim_app, CVE-2024-21513), preflight to Slack beat | 1.9 s |
+| `run --target langchain --no-llm`, CVE-2024-21513 (real upstream code) | 13.6 s |
+| `run --target langchain --no-llm`, CVE-2023-44467 (real upstream code) | 15.3 s |
+
+The scripted beats therefore run on talk time (scroll back to each beat). Replay reproduces
+the recorded run's original pacing (`REPLAY_SPEED=2 scripts/demo.sh replay` halves it) and
+picks the newest run of `$CVE` that reached `notified`, never another CVE's run.
 
 ## Beats and talking points
 
