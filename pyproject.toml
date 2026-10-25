@@ -5,6 +5,9 @@ description = "Always-on local-first agentic SecOps swarm (Purple/Red/Blue) for 
 requires-python = ">=3.12"
 dependencies = ["openai>=1.40", "pytest>=8"]
 
+[project.optional-dependencies]
+slack = ["slack-bolt>=1.20"]
+
 [project.scripts]
 wreckless = "wreckless.cli:main"
 
