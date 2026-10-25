@@ -118,6 +118,8 @@ def verify(script: Path, victim: Path, enclave: Enclave, extra_args: list[str] =
         r = res[t]
         if not r.hit:
             return Verdict(False, "oracle not reached", r, kind)
+        if r.violation:
+            return Verdict(False, "the exploit tripped the enclave guard", r, kind)
         if r.via_victim is None:
             return Verdict(False, "nonce written by the exploit script itself, not via victim code", r, kind)
     if res[ctl].hit:
