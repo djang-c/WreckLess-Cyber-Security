@@ -72,7 +72,9 @@ def test_card_is_cumulative_per_beat(bot):
     ids = [e["action_id"] for e in act["elements"]]
     assert ids == [APPROVE_ACTION, REJECT_ACTION]
     value = json.loads(act["elements"][0]["value"])
-    assert value == {"run_id": f"{CVE}-20261025-020400", "branch": f"wreckless/fix-{CVE}", "cve": CVE}
+    assert {k: value[k] for k in ("run_id", "branch", "cve")} == \
+        {"run_id": f"{CVE}-20261025-020400", "branch": f"wreckless/fix-{CVE}", "cve": CVE}
+    assert "commit" in value
 
 
 def test_failure_path_renders_cross_and_no_buttons(bot):

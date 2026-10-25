@@ -9,7 +9,8 @@ Socket Mode is outbound-only (wss to `*.slack.com`), so no public URL is needed 
 survives `airgap_lockdown.sh` (which blocks only cloud-LLM egress).
 
 Approving does **not** push, merge or call GitHub. The default callback writes
-`runs/<run_id>/approval.json` (Reject writes `rejection.json`); merging is a human step.
+`runs/swarm/items/<item>/decision.json` with the exact commit approved (first click wins; only
+users in `SLACK_APPROVERS` can decide); merging is a human step.
 
 ## 1. Create the app (human step)
 
@@ -49,6 +50,7 @@ Then:
 export SLACK_BOT_TOKEN=xoxb-...      # post + live-update the run card
 export SLACK_CHANNEL=C0123ABCD       # channel ID preferred (name works for the first post)
 export SLACK_APP_TOKEN=xapp-...      # Socket Mode listener (buttons); optional
+export SLACK_APPROVERS=U01AB,U02CD   # Slack user IDs allowed to Approve/Reject (unset = nobody)
 # fallback without a bot token: export SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 #   (webhook cannot update, so each beat posts a new cumulative card)
 # neither set: cards go to logs/slack_outbox.jsonl

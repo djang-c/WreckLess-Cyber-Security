@@ -7,28 +7,42 @@ from wreckless import slack_socket
 from wreckless.notify import APPROVE_ACTION, REJECT_ACTION, build_blocks
 
 CVE = "CVE-2024-21513"
-RUN_ID = f"{CVE}-20261025-020400"
+RUN_ID = f"{CVE}#3"
+RUN_DIR = f"{CVE}-3"
 BRANCH = f"wreckless/fix-{CVE}"
+COMMIT = "c0ffee" * 6 + "abcd"
 
 
 class FakeClient:
     def __init__(self):
         self.updates = []
 
+        self.ephemeral = []
+
     def chat_update(self, **kw):
         self.updates.append(kw)
+        return {"ok": True}
+
+    def chat_postEphemeral(self, **kw):
+        self.ephemeral.append(kw)
         return {"ok": True}
 
 
 def final_card():
     return build_blocks([{"role": "blue", "title": f"✅ Draft PR Ready: {CVE}", "body": "diff", "t_rel": 9}],
-                        cve=CVE, run_id=RUN_ID, branch=BRANCH)
+                        cve=CVE, run_id=RUN_ID, branch=BRANCH, commit=COMMIT)
 
 
-def action_body(action_id, value=None):
+@pytest.fixture(autouse=True)
+def approvers(monkeypatch):
+    monkeypatch.setenv("SLACK_APPROVERS", "U123, U456")
+    monkeypatch.delenv("SLACK_CHANNEL", raising=False)
+
+
+def action_body(action_id, value=None, user="U123"):
     blocks = final_card()
     value = value if value is not None else next(b for b in blocks if b["type"] == "actions")["elements"][0]["value"]
-    return {"type": "block_actions", "user": {"id": "U123", "username": "alice"},
+    return {"type": "block_actions", "user": {"id": user, "username": "alice"},
             "channel": {"id": "C0FAKE"}, "container": {"channel_id": "C0FAKE", "message_ts": "111.222"},
             "message": {"ts": "111.222", "blocks": blocks},
             "actions": [{"action_id": action_id, "value": value}]}
@@ -51,7 +65,8 @@ def test_approve_acks_updates_card_and_records(tmp_path, acks):
     assert not [b for b in up["blocks"] if b["type"] == "actions"]  # buttons gone
     last = up["blocks"][-1]["text"]["text"]
     assert f"Approved by <@U123>* — approval recorded for branch `{BRANCH}`" in last
-    rec = json.loads((tmp_path / RUN_ID / "approval.json").read_text())
+    rec = json.loads((tmp_path / RUN_DIR / "decision.json").read_text())
+    assert rec["commit"] == COMMIT and rec["run_id"] == RUN_ID
     assert rec["decision"] == "approved" and rec["user"] == "U123" and rec["branch"] == BRANCH
 
 
@@ -62,7 +77,7 @@ def test_reject_updates_card_and_custom_callback_called(tmp_path, acks):
     handlers[REJECT_ACTION](ack=ack, body=action_body(REJECT_ACTION), client=client)
     assert seen == [1] and got[0]["decision"] == "rejected"
     assert "Rejected by <@U123>" in client.updates[0]["blocks"][-1]["text"]["text"]
-    assert not (tmp_path / RUN_ID / "approval.json").exists()
+    assert not (tmp_path / RUN_DIR / "decision.json").exists()
 
 
 def test_custom_approve_callback_error_does_not_raise(acks):
@@ -74,7 +89,8 @@ def test_custom_approve_callback_error_does_not_raise(acks):
 
     slack_socket.make_handlers(on_approve=bad)[APPROVE_ACTION](
         ack=ack, body=action_body(APPROVE_ACTION), client=client)
-    assert "callback error: merge bot offline" in client.updates[0]["blocks"][-1]["text"]["text"]
+    text = client.updates[0]["blocks"][-1]["text"]["text"]
+    assert "could not be recorded" in text and "merge bot offline" not in text  # no internals on the card
 
 
 def test_handler_survives_garbage_body_and_client_failure(acks):
@@ -88,6 +104,40 @@ def test_handler_survives_garbage_body_and_client_failure(acks):
     h(ack=ack, body={"actions": [{"value": "not json"}]}, client=Broken())
     h(ack=ack, body=action_body(APPROVE_ACTION), client=Broken())
     assert seen == [1, 1]
+
+
+@pytest.mark.parametrize("user", ["U999", ""])
+def test_unlisted_user_cannot_decide(tmp_path, acks, user):
+    _, ack = acks
+    client = FakeClient()
+    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
+        ack=ack, body=action_body(APPROVE_ACTION, user=user), client=client)
+    assert not client.updates and not list(tmp_path.iterdir())
+
+
+def test_no_approvers_configured_means_nobody(tmp_path, acks, monkeypatch):
+    monkeypatch.delenv("SLACK_APPROVERS")
+    client = FakeClient()
+    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
+        ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
+    assert not client.updates and not list(tmp_path.iterdir())
+
+
+def test_wrong_channel_is_ignored(tmp_path, acks, monkeypatch):
+    monkeypatch.setenv("SLACK_CHANNEL", "C0REAL123")
+    client = FakeClient()
+    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
+        ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
+    assert not client.updates and client.ephemeral
+
+
+def test_first_decision_wins(tmp_path, acks):
+    h = slack_socket.make_handlers(runs_dir=tmp_path)
+    c1, c2 = FakeClient(), FakeClient()
+    h[APPROVE_ACTION](ack=acks[1], body=action_body(APPROVE_ACTION), client=c1)
+    h[REJECT_ACTION](ack=acks[1], body=action_body(REJECT_ACTION, user="U456"), client=c2)
+    rec = json.loads((tmp_path / RUN_DIR / "decision.json").read_text())
+    assert rec["decision"] == "approved" and not c2.updates and "already approved" in c2.ephemeral[0]["text"]
 
 
 @pytest.mark.parametrize("run_id", ["../../etc", "/abs", "", None, "a/b"])

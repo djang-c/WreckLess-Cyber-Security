@@ -43,7 +43,8 @@ def beat_outcome(title: str) -> str:
 
 def build_blocks(beats: list[dict], *, cve: str | None = None, elapsed_s: float | None = None,
                  enclave: str | None = None, patch_source: str | None = None,
-                 run_id: str | None = None, branch: str | None = None) -> list[dict]:
+                 run_id: str | None = None, branch: str | None = None,
+                 commit: str | None = None) -> list[dict]:
     """Pure renderer. beats: [{"role", "title", "body", "t_rel"}] in order; last one is current."""
     if not beats:
         return []
@@ -71,7 +72,9 @@ def build_blocks(beats: list[dict], *, cve: str | None = None, elapsed_s: float 
                                                                           or "WreckLess", TEXT_MAX)}]},
     ]
     if outcome == "ok":
-        value = _clip(json.dumps({"run_id": run_id, "branch": branch, "cve": cve}), BUTTON_VALUE_MAX)
+        # the decision is bound to this exact item + commit, so a stale card can't approve a newer patch
+        value = _clip(json.dumps({"run_id": run_id, "branch": branch, "commit": commit, "cve": cve}),
+                      BUTTON_VALUE_MAX)
         blocks.append({"type": "actions", "block_id": "wreckless_decision", "elements": [
             {"type": "button", "action_id": APPROVE_ACTION, "style": "primary", "value": value,
              "text": {"type": "plain_text", "text": "Approve PR"}},
@@ -109,7 +112,7 @@ class Notifier:
                 m[key] = hit.group(1) if rx.groups else hit.group(0)
         return build_blocks(self.beats, cve=m["cve"], elapsed_s=time.time() - self.t0,
                             enclave=m["enclave"], patch_source=m["patch_source"],
-                            run_id=m["run_id"], branch=m["branch"])
+                            run_id=m["run_id"], branch=m["branch"], commit=m["commit"])
 
     def send(self, role: str, title: str, body: str) -> str:
         blocks = self.card(role, title, body)
@@ -143,6 +146,7 @@ class Notifier:
     def _post(url: str, payload: dict, headers: dict | None = None) -> dict:
         req = urllib.request.Request(url, json.dumps(payload).encode(),
                                      {"Content-Type": "application/json; charset=utf-8", **(headers or {})})
-        with urllib.request.urlopen(req, timeout=10) as r:
+        # short: a firewall that DROPs instead of REJECTs must not stall the hero run
+        with urllib.request.urlopen(req, timeout=3) as r:
             body = r.read().decode()
         return json.loads(body) if body.startswith("{") else {}

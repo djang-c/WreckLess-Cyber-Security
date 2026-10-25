@@ -105,7 +105,7 @@ class Swarm:
         report_path.write_text(json.dumps(report, indent=2))
         self.queue.advance(item_id, "verified", "gate", report=str(report_path))
         ui.say("red", f"\033[41;97m EXPLOIT VERIFIED \033[0m {item_id} · {script.name} ({source})")
-        slack = Notifier()
+        slack = Notifier(run_id=item_id, enclave=enclave.backend)
         slack.send("red", f"🚨 Intrusion reproduced: {item_id}",
                    f"Commit `{commit[:10]}` exploitable · {verdict.reason}\n"
                    f"```{verdict.result.output[-600:]}```")
@@ -129,6 +129,7 @@ class Swarm:
                                          f"Patch source: {patch_source}. {v.summary()}")
         self.queue.advance(item_id, "patched", "blue", branch=branch, commit=fix_commit, source=patch_source)
         elapsed = time.time() - t0
+        slack.bind(branch=branch, commit=fix_commit, patch_source=patch_source)
         via = slack.send("blue", f"✅ Draft PR Ready: {item_id}",
                          f"Branch `{branch}` @ `{fix_commit[:10]}` · patch: {patch_source}\n"
                          f"{v.summary()} · {elapsed:.0f}s\n```{diff[:1500]}```")

@@ -3,7 +3,11 @@
 Socket Mode is outbound-only (wss to *.slack.com), so it survives the cloud-LLM airgap.
 Enabled only if `slack_bolt` is importable AND SLACK_BOT_TOKEN + SLACK_APP_TOKEN are set;
 otherwise `start_listener()` logs one line and returns None. Nothing here pushes to git or
-calls GitHub: approving only records `runs/<run_id>/approval.json` (default callback).
+calls GitHub: a decision only records `<items>/<item>/decision.json` (default callback).
+
+Only Slack user IDs in SLACK_APPROVERS (comma-separated) may decide; unset means nobody can.
+If SLACK_CHANNEL is a channel ID, clicks from any other channel are ignored. The first
+decision per item wins; later clicks (double-clicks, Slack retries) are refused.
 
 Blocking standalone mode (keeps buttons live after a `wreckless run` exits):
     uv run --extra slack python -m wreckless.slack_socket
@@ -19,6 +23,8 @@ from pathlib import Path
 from typing import Callable
 
 from wreckless.config import RUNS
+
+ITEMS = RUNS / "swarm" / "items"   # Swarm's default home; item dirs use '-' for '#'
 from wreckless.notify import APPROVE_ACTION, REJECT_ACTION, TEXT_MAX, _clip
 
 Decision = Callable[[dict], object]
@@ -29,15 +35,27 @@ def _log(msg: str) -> None:
     print(f"[slack-socket] {msg}", file=sys.stderr, flush=True)
 
 
-def record_decision(info: dict, runs_dir: Path = RUNS) -> Path | None:
-    """Default callback: write runs/<run_id>/<decision>.json. No git push, no GitHub."""
-    run_id = info.get("run_id") or info.get("cve") or ""
+class AlreadyDecided(Exception):
+    pass
+
+
+def record_decision(info: dict, runs_dir: Path = ITEMS) -> Path | None:
+    """Default callback: create <items>/<item>/decision.json once. No git push, no GitHub.
+
+    Anything that later acts on an approval must check the branch head still equals
+    info["commit"]: the approval covers that commit, not whatever the branch holds later.
+    """
+    run_id = (info.get("run_id") or "").replace("#", "-")
     if not _SAFE_ID.match(run_id) or ".." in run_id:
         _log(f"refusing to record decision for unsafe/missing run_id {run_id!r}")
         return None
-    path = Path(runs_dir) / run_id / f"{'approval' if info['decision'] == 'approved' else 'rejection'}.json"
+    path = Path(runs_dir) / run_id / "decision.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(info, indent=2))
+    try:
+        with path.open("x") as f:  # first decision wins
+            f.write(json.dumps(info, indent=2))
+    except FileExistsError:
+        raise AlreadyDecided(json.loads(path.read_text()).get("decision", "decided")) from None
     return path
 
 
@@ -55,8 +73,26 @@ def decided_blocks(blocks: list[dict], decision: str, user: str, branch: str | N
                     "text": {"type": "mrkdwn", "text": _clip(text, TEXT_MAX)}}]
 
 
+def _approvers() -> set[str]:
+    return {u.strip() for u in os.environ.get("SLACK_APPROVERS", "").split(",") if u.strip()}
+
+
+def _expected_channel() -> str | None:
+    ch = os.environ.get("SLACK_CHANNEL", "")
+    return ch if re.fullmatch(r"[CG][A-Z0-9]{6,}", ch) else None  # names like #sec can't be checked
+
+
+def _deny(client, channel: str | None, user: str, text: str) -> None:
+    _log(text)
+    try:
+        if channel and user:
+            client.chat_postEphemeral(channel=channel, user=user, text=text)
+    except Exception as e:  # noqa: BLE001
+        _log(f"ephemeral failed: {e}")
+
+
 def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None = None,
-                  runs_dir: Path = RUNS) -> dict[str, Callable]:
+                  runs_dir: Path = ITEMS, approvers: set[str] | None = None) -> dict[str, Callable]:
     """Return {action_id: handler}. Handlers use Bolt's kwarg injection (ack, body, client)."""
     on_approve = on_approve or (lambda info: record_decision(info, runs_dir))
     on_reject = on_reject or (lambda info: record_decision(info, runs_dir))
@@ -72,19 +108,28 @@ def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None
                 value = json.loads(action.get("value") or "{}")
             except ValueError:
                 value = {}
-            user = (body.get("user") or {}).get("id") or (body.get("user") or {}).get("username", "?")
+            user = (body.get("user") or {}).get("id") or ""
+            msg = body.get("message") or {}
+            channel = (body.get("channel") or {}).get("id") or (body.get("container") or {}).get("channel_id")
+            allowed = _approvers() if approvers is None else approvers
+            if user not in allowed:
+                return _deny(client, channel, user, f"<@{user}> is not in SLACK_APPROVERS; {decision} ignored")
+            expected = _expected_channel()
+            if expected and channel != expected:
+                return _deny(client, channel, user, f"decisions are only accepted in <#{expected}>")
             info = {"decision": decision, "user": user, "run_id": value.get("run_id"),
-                    "branch": value.get("branch"), "cve": value.get("cve"), "t": time.time()}
+                    "branch": value.get("branch"), "commit": value.get("commit"),
+                    "cve": value.get("cve"), "t": time.time()}
             note = None
             try:
                 out = callback(info)
                 if isinstance(out, Path):
-                    note = f"recorded {out.name} for run {info['run_id'] or info['cve']}"
+                    note = f"recorded {out.name} for {info['run_id']} @ {(info['commit'] or '?')[:10]}"
+            except AlreadyDecided as e:
+                return _deny(client, channel, user, f"{info['run_id']} was already {e}; click ignored")
             except Exception as e:  # noqa: BLE001
-                note = f"callback error: {e}"
-                _log(note)
-            msg = body.get("message") or {}
-            channel = (body.get("channel") or {}).get("id") or (body.get("container") or {}).get("channel_id")
+                _log(f"callback error: {e}")
+                note = "decision could not be recorded (see the WreckLess host log)"
             ts = msg.get("ts") or (body.get("container") or {}).get("message_ts")
             if channel and ts:
                 client.chat_update(channel=channel, ts=ts, text=f"WreckLess: {decision}",
