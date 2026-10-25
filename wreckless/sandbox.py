@@ -26,7 +26,7 @@ import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
-GUARD = textwrap.dedent('''
+_GUARD_BODY = textwrap.dedent('''
     import os, sys, json
     _ROOT = os.environ["WRECKLESS_SANDBOX_ROOT"]
     _ORACLE = os.environ.get("WRECKLESS_ORACLE")
@@ -62,17 +62,17 @@ GUARD = textwrap.dedent('''
     def _provenance():
         # A frame only counts as victim code if its code object equals one compiled from
         # the victim's source on disk; co_filename alone is forgeable via compile().
-        frames, via, f = [], None, sys._getframe(2)
+        frames, via, func, f = [], None, None, sys._getframe(2)
         _busy.append(1)
         try:
             while f is not None:
                 fn = f.f_code.co_filename
                 frames.append(fn)
                 if via is None and _in_victim(fn) and f.f_code in _genuine_codes(fn):
-                    via = fn
+                    via, func = fn, getattr(f.f_code, "co_qualname", f.f_code.co_name)
                 f = f.f_back
             with open(_PROV, "w") as fh:
-                json.dump({"via_victim": via, "frames": frames[:30]}, fh)
+                json.dump({"via_victim": via, "via_func": func, "frames": frames[:30]}, fh)
         finally:
             _busy.pop()
 
@@ -107,6 +107,12 @@ GUARD = textwrap.dedent('''
     sys.addaudithook(_hook)
 ''')
 
+# All guard state lives in a closure: `import sitecustomize` exposes no names (no _busy to
+# switch the hook off, no provenance path to forge). Not a security boundary against code
+# that digs through gc in the same process; see docs/deviations.md / README limitations.
+GUARD = ("def _wreckless_guard():\n" + textwrap.indent(_GUARD_BODY, "    ")
+         + "\n_wreckless_guard()\ndel _wreckless_guard\n")
+
 
 @dataclass
 class ExecResult:
@@ -123,6 +129,7 @@ class OracleResult:
     backend: str
     frames: list = field(default_factory=list)
     returncode: int | None = None  # exploit process exit code (0 = it claims success)
+    via_func: str | None = None    # innermost genuine victim function when the oracle was written
 
     @property
     def verified(self) -> bool:
@@ -162,6 +169,8 @@ class Enclave:
             **(env or {}),
         }
         argv = [self.impl.python if a == self.python else a for a in argv]
+        # a previous payload may have rewritten the guard (it lives under the writable root)
+        (self.guard_dir / "sitecustomize.py").write_text(GUARD)
         return self.impl.run(argv, e, timeout, cwd or self.root)
 
     def run_exploit(self, script: Path, victim: Path, extra_args: list[str] = (),
@@ -186,7 +195,7 @@ class Enclave:
         info = json.loads(raw) if raw else {}
         via = info.get("via_victim")
         return OracleResult(hit, self.impl.to_host(via) if via else None, r.output, r.backend,
-                            info.get("frames", []), r.returncode)
+                            info.get("frames", []), r.returncode, info.get("via_func"))
 
     def close(self) -> None:
         self.impl.close()

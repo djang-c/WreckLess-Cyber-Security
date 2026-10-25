@@ -181,13 +181,18 @@ def transition(item: str, frm: str, to: str, actor: str, ts: float | None = None
         ts=ts, _record=False)
 
 
-def intrusion(item: str, script: str, source: str, _record: bool = True) -> None:
+def intrusion(item: str, script: str, source: str, strength: str | None = "verified",
+              _record: bool = True) -> None:
     """Full-width red flash. Call only after the item reached ``verified``."""
     if _record:
-        _emit("red", "intrusion", item=item, script=script, source=source)
+        _emit("red", "intrusion", item=item, script=script, source=source, strength=strength)
     w = _width()
-    title = " INTRUSION · EXPLOIT VERIFIED "
-    body = f"{item} · {script} ({source}) · oracle hit from victim code"
+    if strength == "reachable":
+        title = " INTRUSION · EXPLOIT REACHABLE (flaw unconfirmed) "
+        body = f"{item} · {script} ({source}) · oracle hit from victim code; flawed path not confirmed"
+    else:
+        title = " INTRUSION · EXPLOIT VERIFIED "
+        body = f"{item} · {script} ({source}) · oracle hit from the flawed code path"
     if not color_enabled():
         with _LOCK:
             _out("!" * w)

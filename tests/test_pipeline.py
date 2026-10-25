@@ -43,7 +43,9 @@ def test_scripted_item_walks_full_lifecycle(tmp_path, cve):
 @pytest.mark.parametrize("cve", CVES)
 def test_gate_verifies_reference_exploit_via_victim_code(victim, cve):
     src, enclave = victim
-    v = gate.verify(BENCHMARKS / cve / "known_good" / "repro_exploit.py", src, enclave)
+    kg = BENCHMARKS / cve / "known_good"
+    v = gate.verify(kg / "repro_exploit.py", src, enclave, reference_patch=kg / "fix.patch",
+                    reference_exploit=kg / "repro_exploit.py")
     assert v.verified and "victim" in v.result.via_victim
 
 

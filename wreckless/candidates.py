@@ -83,13 +83,14 @@ class CandidateQueue:
                          "FROM items WHERE id=?", (item_id,))[0]
         return Item(*row[:6], json.loads(row[6]), json.loads(row[7]))
 
-    def advance(self, item_id: str, new: str, actor: str, **data) -> Item:
+    def advance(self, item_id: str, new: str, actor: str, label: str | None = None, **data) -> Item:
+        """``label`` overrides the state's default label (e.g. REACHABLE instead of VERIFIED)."""
         with self._write():
             item = self.get(item_id)
             if new not in LIFECYCLE.get(item.state, set()):
                 raise RuntimeError(f"{item_id}: illegal transition {item.state} -> {new}")
             item.history.append({"t": time.time(), "from": item.state, "to": new, "actor": actor, **data})
-            label = LABEL.get(new, item.label)
+            label = label or LABEL.get(new, item.label)
             cur = self.conn.execute(
                 "UPDATE items SET state=?, label=?, history=?, updated=? WHERE id=? AND state=?",
                 (new, label, json.dumps(item.history), time.time(), item_id, item.state))

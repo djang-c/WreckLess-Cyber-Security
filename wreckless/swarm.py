@@ -145,10 +145,12 @@ class Swarm:
         args = ["--agentic"] if self.s.agentic_exploit else []
         if script:
             ui.mascot("gate")
-        ref = BENCHMARKS / str(item.cve) / "known_good" / "fix.patch" if item.cve else None
+        bench = self.target.bench(item.cve)   # this target's own reference fix + exploit, if any
+        kg = bench / "known_good" if bench else None
         verdict = gate.verify(script, red_wt, enclave, args, red._victim_env(self.s),
-                              reference_patch=ref) if script else None
-        if not verdict or not verdict.verified:
+                              reference_patch=kg / "fix.patch" if kg else None,
+                              reference_exploit=kg / "repro_exploit.py" if kg else None) if script else None
+        if not verdict or not verdict.passed:
             reason = verdict.reason if verdict else "no exploit proposed"
             self.queue.advance(item_id, "rejected", "gate", reason=reason)
             ui.say("gate", f"{item_id} REJECTED — {reason}")
@@ -159,13 +161,15 @@ class Swarm:
             "affected_file": item.payload.get("intel", {}).get("affected_file") or item.payload.get("file"),
             "repro_script": str(script), "exploit_source": source,
             "oracle": {"verdict": verdict.reason, "via": verdict.result.via_victim, "control": verdict.control,
+                       "strength": verdict.strength, "flaw_site": verdict.flaw_site,
                        "backend": verdict.result.backend},
             "attack_trace": verdict.result.output[-2000:], "agentic": self.s.agentic_exploit,
         }
         report_path = d / "vulnerability_report.json"
         report_path.write_text(json.dumps(report, indent=2))
-        self.queue.advance(item_id, "verified", "gate", report=str(report_path))
-        ui.intrusion(item_id, script.name, source)
+        self.queue.advance(item_id, "verified", "gate", report=str(report_path),
+                           label=None if verdict.verified else "REACHABLE")
+        ui.intrusion(item_id, script.name, source, strength=verdict.strength)
         slack = Notifier(run_id=item_id, enclave=enclave.backend)
         slack.send("red", f"🚨 Intrusion reproduced: {item_id}",
                    f"Commit `{commit[:10]}` exploitable · {verdict.reason}\n"
