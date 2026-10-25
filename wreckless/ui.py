@@ -32,6 +32,20 @@ ROLES = {  # single-width icons only: emoji widths break alignment in tmux panes
     "core": ("\033[1;37m", "▬", "CONDUCTOR"),
 }
 
+
+
+def role_color(role: str) -> str:
+    """The SGR code for a role: the same colour as its bird (mascots.ROLE_COLORS), so the name tag
+    in the log matches the sprite. Truecolor when the terminal (or the TUI) can show it, else the
+    nearest of 256; the 16-colour code in ROLES is only the fallback for unknown roles."""
+    rgb = mascots.ROLE_COLORS.get(role, (None,))[0]
+    if rgb is None:
+        return ROLES[role][0]
+    ct = os.environ.get("COLORTERM", "")
+    mode = "truecolor" if OUT is not None or "truecolor" in ct or "24bit" in ct else "256"
+    return f"\033[1;{mascots._fg(rgb, mode)}m"
+
+
 BOLD, DIM = "\033[1m", "\033[2m"
 REVERSE = "\033[1;7;33m"   # replay marker: bold reverse-video yellow, hard to miss
 GREEN, RED, CYAN = "\033[1;32m", "\033[1;31m", "\033[36m"
@@ -121,7 +135,8 @@ REPLAYING = False
 
 def say(role: str, msg: str, ts: float | None = None, _record: bool = True) -> None:
     """One trace line. ``ts`` lets replay print the original wall-clock time."""
-    color, icon, tag = ROLES[role]
+    _, icon, tag = ROLES[role]
+    color = role_color(role)
     stamp = time.strftime("%H:%M:%S", time.localtime(ts))
     mark = _c(REVERSE, "REPLAY") + " " if REPLAYING else ""
     _out(f"{mark}{_c(color, f'{stamp} {icon} [{tag}]')} {msg}")
@@ -130,7 +145,7 @@ def say(role: str, msg: str, ts: float | None = None, _record: bool = True) -> N
 
 
 def detail(role: str, msg: str, limit: int = 600, _record: bool = True) -> None:
-    color = ROLES[role][0]
+    color = role_color(role)
     if len(msg) > limit:
         msg = msg[:limit] + " …"
     with _LOCK:
@@ -149,7 +164,8 @@ def banner(text: str, _record: bool = True) -> None:
 
 def mascot(role: str, task: str | None = None, _record: bool = True) -> None:
     """The role's bird, printed when it enters the stage, with its task's hat and prop."""
-    color, icon, tag = ROLES[role]
+    _, icon, tag = ROLES[role]
+    color = role_color(role)
     task = task or mascots.STAGE_TASK[role]
     mode = mascots.color_mode() if color_enabled() else "none"
     art = mascots.render(mascots.pixels(role, task, "idle", 1.0), mode)
@@ -189,7 +205,7 @@ def _args(args) -> dict:
 
 
 def _lines(role: str, text: str, limit: int, style: str = "") -> None:
-    color = ROLES[role][0]
+    color = role_color(role)
     lines = text.splitlines() or [""]
     with _LOCK:
         for ln in lines[:limit]:
@@ -330,7 +346,7 @@ def diff(role: str, text: str, limit: int = 1500, _record: bool = True) -> None:
     """Unified diff with +green / -red; same gutter as ``detail``."""
     if _record:
         _emit(role, "diff", text=text, limit=limit)
-    color = ROLES[role][0]
+    color = role_color(role)
     if len(text) > limit:
         text = text[:limit] + " …"
     with _LOCK:
@@ -382,7 +398,7 @@ def gate_report(script: str, control: str, flaw: str | None, runs: list[dict], p
     if _record:
         _emit("gate", "gate_report", script=script, control=control, flaw=flaw, runs=runs,
               passed=passed, strength=strength, reason=reason)
-    color = ROLES["gate"][0]
+    color = role_color("gate")
     g = lambda s: _c(color, s)  # noqa: E731
     with _LOCK:
         _out(g("   ┌─ ") + _c(BOLD, f"GATE · {script}") + f" · control: {control}"

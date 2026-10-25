@@ -254,3 +254,13 @@ def test_step_line_shows_model_context_fill_and_rate(capsys, monkeypatch):
     monkeypatch.delenv("NO_COLOR")
     ui.step("blue", "blue", 15000, 10, 0.0, 16384)       # 92% full, too quick to give a rate
     assert ui.RED + "ctx 15.0k/16k" in buf.getvalue()
+
+
+def test_log_tags_use_their_birds_colour(monkeypatch):
+    """Each role's name tag in the log is drawn in its bird's colour (e.g. VERIFIER yellow)."""
+    from wreckless import mascots, ui
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    for role, (body, _) in mascots.ROLE_COLORS.items():
+        assert ui.role_color(role) == "\033[1;38;2;%d;%d;%dm" % body
+    monkeypatch.setenv("COLORTERM", "")
+    assert ui.role_color("gate").startswith("\033[1;38;5;")    # 256-colour terminals: nearest match
