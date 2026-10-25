@@ -54,4 +54,6 @@ All four are now rejected and kept as regression tests. On top of the strength r
 
 **Known residual.** A white-box forgery that digs the guard's state out of `gc` (`a8_gc_dig_forge.py`) is still VERIFIED. It is recorded as a strict-xfail test and stated in the README. Fixing it needs out-of-process provenance.
 
+**Update 2026-10-25 (Kevin, `84e293a`).** gc introspection is now a guard violation and any violation rejects the run, so `a8_gc_dig_forge.py` is rejected; the strict xfail became `test_gc_dig_forgery_is_rejected`. Remaining residual: a payload that leaves Python (`os.system`) is outside the in-process hook; the control run is the backstop.
+
 **Decided by:** the team (Person B), 2026-10-25.
