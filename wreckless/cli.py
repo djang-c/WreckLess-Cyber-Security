@@ -29,6 +29,7 @@ def run(cve: str, s: Settings, runs_dir: Path = RUNS) -> dict:
     run_dir.mkdir(parents=True)
     sm, slack = _TracedStateMachine(run_dir, run_id), Notifier()
     enclave = Enclave(run_dir, sys.executable)
+    slack.bind(run_id=run_id, enclave=enclave.backend)
     title = f"WreckLess · {cve} · {s.mode} mode{' · demo' if s.demo_mode else ''}"
     (run_dir / "ui_meta.json").write_text(json.dumps({"banner": title, "t0": t0}))
     ui.banner(title)
@@ -108,19 +109,64 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--demo-mode", action="store_true", help="N=1, temp 0, cached fallback")
     r.add_argument("--no-llm", action="store_true", help="scripted run with cached exploit/patch")
     r.add_argument("--agentic", action="store_true", help="exploit via prompt injection into victim LLM")
+    r.add_argument("--swarm", action="store_true",
+                   help="walk the CVE through the queue + verify gate (per-item lifecycle)")
     rp = sub.add_parser("replay", help="replay a finished run from its state.json (stage safety net)")
     rp.add_argument("run_dir", type=Path)
     rp.add_argument("--speed", type=float, default=1.0, help="time scale; 2 = twice as fast, 0 = instant")
     rp.add_argument("--max-gap", type=float, default=0.0, help="cap any single pause (s); 0 = no cap")
-    a = ap.parse_args(argv)
+    sw = sub.add_parser("swarm", help="always-on: scheduled Purple + continuous Red-hunt + gate -> Blue")
+    sw.add_argument("--purple-interval", type=float, default=600, help="seconds between Purple ticks")
+    sw.add_argument("--no-llm", action="store_true")
+    sw.add_argument("--slack-listener", action="store_true", help="also listen for Approve/Reject")
+    sub.add_parser("seed", help="seed the liveness backlog through the real gate", add_help=False)
+    sub.add_parser("queue", help="print candidate queue stats (liveness panel)")
+    a, rest = ap.parse_known_args(argv)
     if a.cmd == "replay":
         from wreckless.replay import replay
         return replay(a.run_dir, speed=a.speed, max_gap=a.max_gap)
+    if a.cmd == "seed":
+        import runpy
+        seed = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts" / "seed_backlog.py"))
+        return seed["main"](rest)
+    if rest:
+        ap.error(f"unrecognized arguments: {' '.join(rest)}")
+    if a.cmd == "queue":
+        from wreckless.queue import CandidateQueue
+        st = CandidateQueue().stats()
+        ui.say("core", f"queue · {st['candidates']} candidates · {st['verified']} verified · "
+                       f"{st['rejected']} rejected · {st['patched']} patched")
+        return 0
+    if a.cmd == "swarm":
+        return _swarm(Settings(use_llm=not a.no_llm), a.purple_interval, a.slack_listener)
     s = Settings(mode=a.mode, demo_mode=a.demo_mode, use_llm=not a.no_llm, agentic_exploit=a.agentic)
     if a.demo_mode:
         s.max_agent_steps = 8
+    if a.swarm:
+        from wreckless.swarm import Swarm
+        doc = Swarm(s).run_one(a.cve)
+        return 0 if doc["state"] == "notified" and doc["history"][-1]["payload"].get("ok") else 1
     doc = run(a.cve, s)
     return 0 if doc["state"] == "NOTIFIED" else 1
+
+
+def _swarm(s: Settings, purple_interval: float, slack_listener: bool) -> int:
+    from wreckless.swarm import Swarm
+    if slack_listener:
+        from wreckless.slack_socket import start_listener
+        start_listener()
+    sw = Swarm(s)
+    sw.start(purple_interval_s=purple_interval)
+    ui.say("core", "swarm up · Purple scheduled · Red-hunt continuous · Ctrl-C to stop")
+    try:
+        while True:
+            time.sleep(30)
+            st = sw.queue.stats()
+            ui.say("core", f"liveness · {st['candidates']} candidates · {st['verified']} verified · "
+                           f"{st['rejected']} rejected · {st['patched']} patched")
+    except KeyboardInterrupt:
+        ui.say("core", "stopping swarm")
+    return 0 if sw.shutdown() else 1
 
 
 if __name__ == "__main__":

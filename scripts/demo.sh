@@ -62,7 +62,7 @@ fi
 # ── Beat 1: airgap ────────────────────────────────────────────────────────
 beat "1 · AIRGAP ON (cloud-LLM routes dropped; loopback + Slack stay up)"
 if [[ "$(uname -s)" == Linux ]]; then
-  for sub in on status; do
+  for sub in on verify; do
     echo "  will run: sudo scripts/airgap_lockdown.sh $sub"
     if ask "  run it?"; then sudo scripts/airgap_lockdown.sh "$sub"; else info "skipped (say so on stage)"; fi
   done
