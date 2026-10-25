@@ -69,7 +69,9 @@ Setup: [`slack-setup.md`](slack-setup.md). The listener retries with backoff and
 `WRECKLESS_SANDBOX=auto` (default) uses OpenShell when `openshell status` says Connected,
 else the userland guard; force with `openshell` or `userland`. Bring OpenShell up with
 `scripts/openshell_up.sh` (builds `wreckless-sandbox:*` images, starts the gateway).
-`wreckless run` prints which one it used.
+`wreckless run` prints which one it used. With `--agentic` the sandbox is granted one route at
+runtime: the victim LLM's loopback port on the host (as `host.openshell.internal`), for `python3.12`
+only. The base policy (`sandbox/policy.yaml`) has no network section, so everything else is denied.
 
 ## 6. Airgap
 

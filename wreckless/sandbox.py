@@ -620,6 +620,21 @@ def openshell_available() -> bool:
     return "Connected" in out
 
 
+HOST_ALIAS = "host.openshell.internal"   # what a sandbox calls the gateway host's loopback
+SANDBOX_PYTHON = "/usr/local/bin/python3.12"   # policy binaries are kernel-resolved paths, not symlinks
+
+
+def host_alias(url: str) -> tuple[str, int | None]:
+    """(url with a loopback host swapped for HOST_ALIAS, its port). Any other host is left alone
+    with port None: only the host's own loopback services can be granted to a sandbox."""
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    if u.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return url, None
+    port = u.port or (443 if u.scheme == "https" else 80)
+    return u._replace(netloc=f"{HOST_ALIAS}:{port}").geturl(), port
+
+
 OWNER_LABEL = "wreckless-owner"
 
 
@@ -687,6 +702,7 @@ class _OpenShell:
         self.remote = f"/sandbox/w/{root.name}"
         self.sandbox = "wl-" + hashlib.sha1(str(root).encode()).hexdigest()[:12]
         self.created = False
+        self.granted: set[int] = set()
 
     def _cli(self, *args, timeout: int = 300) -> subprocess.CompletedProcess:
         try:
@@ -709,6 +725,22 @@ class _OpenShell:
             if r.returncode != 0:
                 raise RuntimeError(f"openshell create failed: {r.stderr or r.stdout}")
         self.created = True
+
+    def _grant_host_port(self, port: int) -> None:
+        """Let this sandbox's python reach one loopback service of the host (the victim LLM in
+        --agentic mode). Everything else stays denied: the base policy has no network section."""
+        if port in self.granted:
+            return
+        try:
+            r = subprocess.run(["openshell", "policy", "update", self.sandbox, "--add-endpoint",
+                                f"{HOST_ALIAS}:{port}:full:rest", "--binary", SANDBOX_PYTHON,
+                                "--rule-name", f"host_{port}", "--wait"],
+                               capture_output=True, text=True, timeout=90)
+        except subprocess.TimeoutExpired as t:
+            raise RuntimeError(f"openshell policy update timed out after {t.timeout:.0f}s") from t
+        if r.returncode != 0:
+            raise RuntimeError(f"openshell policy update failed: {r.stderr or r.stdout}")
+        self.granted.add(port)
 
     def _exec(self, cmd: list[str], timeout: int, env: dict | None = None, workdir: str | None = None):
         args = ["exec", "-n", self.sandbox, "--no-tty", "--timeout", str(timeout)]
@@ -734,6 +766,10 @@ class _OpenShell:
         self._ensure()
         self._sync()
         env = {k: self._map(v) for k, v in env.items()}
+        if url := env.get("VICTIM_LLM_URL"):  # agentic: the victim LLM is a host service
+            env["VICTIM_LLM_URL"], port = host_alias(url)
+            if port:
+                self._grant_host_port(port)
         if secret:  # no fd passing through the CLI; the guard pops it from its env at startup
             env["WRECKLESS_PROV_KEY"] = secret
         p = self._exec([self._map(a) for a in argv], timeout, env, self._map(str(cwd)))

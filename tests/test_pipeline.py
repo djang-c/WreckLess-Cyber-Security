@@ -152,6 +152,38 @@ def test_openshell_blocks_even_with_guard_disabled(tmp_path):
     assert "EGRESS_BLOCKED" in r.output and "FS_BLOCKED" in r.output, r.output
 
 
+def test_host_alias_only_rewrites_the_hosts_loopback():
+    from wreckless.sandbox import host_alias
+    assert host_alias("http://127.0.0.1:8002/v1") == ("http://host.openshell.internal:8002/v1", 8002)
+    assert host_alias("http://localhost/v1") == ("http://host.openshell.internal:80/v1", 80)
+    assert host_alias("http://10.1.2.3:8002/v1") == ("http://10.1.2.3:8002/v1", None)
+
+
+def _victim_up() -> bool:
+    import urllib.request
+    try:
+        return urllib.request.urlopen("http://127.0.0.1:8002/v1/models", timeout=3).status == 200
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not (openshell_available() and _victim_up()), reason="needs OpenShell and the victim LLM on :8002")
+def test_openshell_agentic_reaches_only_the_victim_llm(tmp_path):
+    """--agentic grants the sandbox exactly one host port; the other models and the internet stay denied."""
+    enclave = Enclave(tmp_path, sys.executable, backend="openshell")
+    code = ("import os, urllib.request as u\n"
+            "for name, url in (('VICTIM', os.environ['VICTIM_LLM_URL'] + '/models'),\n"
+            "                  ('RED', 'http://host.openshell.internal:8000/v1/models'),\n"
+            "                  ('NET', 'http://example.com/')):\n"
+            "    try:\n        print(name, 'OPEN', u.urlopen(url, timeout=8).status)\n"
+            "    except Exception as e:\n        print(name, 'BLOCKED', type(e).__name__)\n")
+    try:
+        r = enclave.run([enclave.python, "-I", "-c", code], env={"VICTIM_LLM_URL": "http://127.0.0.1:8002/v1"})
+    finally:
+        enclave.close()
+    assert "VICTIM OPEN 200" in r.output and "RED BLOCKED" in r.output and "NET BLOCKED" in r.output, r.output
+
+
 def test_recover_fails_items_left_in_flight(tmp_path):
     q = CandidateQueue(tmp_path / "q.db", EventLog(tmp_path / "events.jsonl"))
     a, b, c = (q.enqueue("purple", t) for t in "abc")
