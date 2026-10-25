@@ -50,7 +50,7 @@ def test_approve_acks_updates_card_and_records(tmp_path, acks):
     assert up["channel"] == "C0FAKE" and up["ts"] == "111.222"
     assert not [b for b in up["blocks"] if b["type"] == "actions"]  # buttons gone
     last = up["blocks"][-1]["text"]["text"]
-    assert f"Approved by <@U123>* — merging branch `{BRANCH}`" in last
+    assert f"Approved by <@U123>* — approval recorded for branch `{BRANCH}`" in last
     rec = json.loads((tmp_path / RUN_ID / "approval.json").read_text())
     assert rec["decision"] == "approved" and rec["user"] == "U123" and rec["branch"] == BRANCH
 

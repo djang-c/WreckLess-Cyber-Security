@@ -45,7 +45,7 @@ def decided_blocks(blocks: list[dict], decision: str, user: str, branch: str | N
                    note: str | None = None) -> list[dict]:
     """Pure: replace the actions block with the human decision (buttons removed => no double-click)."""
     if decision == "approved":
-        text = f"✅ *Approved by <@{user}>* — merging branch `{branch or '?'}`"
+        text = f"✅ *Approved by <@{user}>* — approval recorded for branch `{branch or '?'}` (merge is a human step)"
     else:
         text = f"❌ *Rejected by <@{user}>* — branch `{branch or '?'}` left unmerged"
     if note:
