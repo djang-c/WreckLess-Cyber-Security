@@ -207,11 +207,15 @@ def _expected_tests(test: Path) -> set[str]:
     return {n.name for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")}
 
 
-def _junit(path: Path) -> tuple[set[str], int, int]:
-    if not path.exists():
+def _junit(xml: str | None) -> tuple[set[str], int, int]:
+    if not xml:
         return set(), 0, 0
     names, passed, failed = set(), 0, 0
-    for case in ET.parse(path).getroot().iter("testcase"):
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return set(), 0, 0
+    for case in root.iter("testcase"):
         names.add(case.get("name", "").split("[")[0])
         if any(c.tag in ("failure", "error", "skipped") for c in case):
             failed += 1
@@ -236,7 +240,8 @@ def _held_out(enclave: Enclave, wt: Path, test: Path) -> HeldOut:
                         cwd=run, env={"PYTHONPATH": f"{enclave.guard_dir}{os.pathsep}{wt.resolve()}",
                                       "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
                                       "WRECKLESS_TARGET_ROOT": str(wt.resolve())})
-        names, passed, failed = _junit(junit)
+        # read through the enclave: under OpenShell the file only exists inside the sandbox
+        names, passed, failed = _junit(enclave.impl.read(junit))
         missing = _expected_tests(test) - names
         ok = r.returncode == 0 and failed == 0 and passed > 0 and not missing
         note = f"\n[held-out] junit: {passed} passed, {failed} failed, missing {sorted(missing)}"
