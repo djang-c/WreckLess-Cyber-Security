@@ -1,0 +1,5 @@
+{
+  "_comment": "Purple matches advisories against this: the replica models langflow 1.2.x, affected by CVE-2025-3248 (fixed in 1.3.0).",
+  "ecosystem": "PyPI",
+  "packages": {"langflow": "1.2.0"}
+}

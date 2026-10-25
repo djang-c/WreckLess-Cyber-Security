@@ -1,0 +1,5 @@
+{
+  "_comment": "No third-party dependency: this target models an application-level flaw (no advisory feed matches it). Its case is the curated bundle in benchmarks/WL-2024-RAG-EXFIL.",
+  "ecosystem": "PyPI",
+  "packages": {}
+}
