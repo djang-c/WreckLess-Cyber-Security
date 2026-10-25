@@ -354,15 +354,15 @@ class WrecklessApp(App):
     TITLE = "WreckLess"
     SUB_TITLE = "local AI security team"
     CSS = """
-    #top { height: 1fr; }
+    #hero { height: 16; }
     #stage { width: 3fr; }
     #steps { height: 3; margin-top: 1; content-align: center middle; }
     #headline { height: 2; padding: 0 2; }
     #flock { height: 10; content-align: center middle; }
-    #log { height: 1fr; min-height: 6; border: round $primary; }
-    #side { width: 1fr; min-width: 34; }
-    #item_box { border: round $secondary; height: 1fr; }
-    #gb10 { border: round $accent; height: auto; min-height: 6; }
+    #gb10 { width: 1fr; min-width: 36; height: 100%; border: round $accent; padding: 0 1; }
+    #main { height: 1fr; }
+    #log { width: 3fr; min-height: 6; border: round $primary; }
+    #item_box { width: 1fr; min-width: 36; border: round $secondary; }
     #brains { height: 7; }
     .card { width: 1fr; border: round $accent; padding: 0 1; }
     .card .change { width: 100%; min-width: 16; height: 3; }
@@ -399,16 +399,16 @@ class WrecklessApp(App):
         yield Header()
         with TabbedContent(initial="live"):
             with TabPane("Live [1]", id="live"):
-                with Horizontal(id="top"):
+                with Horizontal(id="hero"):
                     with Vertical(id="stage"):
                         yield Static(id="steps")
                         yield Static(id="headline")
                         yield Static(id="flock")
-                        yield RichLog(id="log", wrap=False, markup=False, max_lines=4000)
-                    with Vertical(id="side"):
-                        with VerticalScroll(id="item_box"):
-                            yield Static(id="item")
-                        yield Static(id="gb10")
+                    yield Static(id="gb10")
+                with Horizontal(id="main"):
+                    yield RichLog(id="log", wrap=False, markup=False, max_lines=4000)
+                    with VerticalScroll(id="item_box"):
+                        yield Static(id="item")
                 with Horizontal(id="brains"):
                     for role in ("red", "blue", "victim"):
                         yield BrainCard(role)
