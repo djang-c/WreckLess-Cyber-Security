@@ -4,7 +4,7 @@
 #             scripts/airgap_lockdown.sh status|verify|dry-run [airtight]   (no root needed)
 #
 #   on        block-list: REJECT the cloud-LLM APIs over IPv4 AND IPv6 (stage default)
-#   off       remove the WRECKLESS_AIRGAP chain + OUTPUT jump (v4 and v6)
+#   off       remove the WRECKLESS_AIRGAP chain + OUTPUT/DOCKER-USER jumps (v4 and v6)
 #   airtight  default-deny OUTPUT; allow lo, ESTABLISHED, RFC1918, DNS, Slack only
 #   status    show the chain (needs root to list rules) + quick reachability probe
 #   verify    PASS/FAIL table, exits non-zero on any FAIL (the on-stage proof)
@@ -17,7 +17,8 @@
 set -euo pipefail
 CHAIN=WRECKLESS_AIRGAP
 DOMAINS=(api.openai.com api.anthropic.com generativelanguage.googleapis.com
-         api.mistral.ai api.cohere.com api.together.xyz api.groq.com openrouter.ai)
+         aiplatform.googleapis.com api.mistral.ai api.cohere.com api.together.xyz
+         api.groq.com openrouter.ai api.x.ai api.deepseek.com)
 # Anthropic publishes its API inbound ranges (https://platform.claude.com/docs/en/api/ip-addresses);
 # blocked statically in addition to DNS. OpenAI publishes none, so it is DNS-resolved at run time.
 STATIC_V4=(160.79.104.0/23)
@@ -72,16 +73,25 @@ resolve() {
     grep -v -E '^(0\.0\.0\.0|127\.|::$|::1$|::ffff:)' | sort -u || true
 }
 
+# Containers (Docker, OpenShell sandboxes) egress via FORWARD, not OUTPUT. Docker's
+# DOCKER-USER chain is the supported hook for that; jump into our chain there too.
+HOOKS=(OUTPUT DOCKER-USER)
+
 # reset_chain <ipt>: create the chain or flush it, and make sure exactly one jump exists
 reset_chain() {
-  local ipt=$1
+  local ipt=$1 hook
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "+ $ipt -N $CHAIN 2>/dev/null || $ipt -F $CHAIN"
-    echo "+ $ipt -C OUTPUT -j $CHAIN 2>/dev/null || $ipt -I OUTPUT 1 -j $CHAIN"
+    for hook in "${HOOKS[@]}"; do
+      echo "+ $ipt -C $hook -j $CHAIN 2>/dev/null || $ipt -I $hook 1 -j $CHAIN  # if $hook exists"
+    done
     return 0
   fi
   "$ipt" -N "$CHAIN" 2>/dev/null || "$ipt" -F "$CHAIN"
-  "$ipt" -C OUTPUT -j "$CHAIN" 2>/dev/null || "$ipt" -I OUTPUT 1 -j "$CHAIN"
+  for hook in "${HOOKS[@]}"; do
+    "$ipt" -S "$hook" >/dev/null 2>&1 || continue   # DOCKER-USER only exists with Docker
+    "$ipt" -C "$hook" -j "$CHAIN" 2>/dev/null || "$ipt" -I "$hook" 1 -j "$CHAIN"
+  done
 }
 
 # block_rules <ipt> <4|6>: REJECT (fast fail, no timeout) every LLM address
@@ -95,7 +105,9 @@ block_rules() {
     red "  ✗ BLOCKED anthropic published range ($ip)"
   done
   for d in "${DOMAINS[@]}"; do
-    for ip in $(resolve "$d" "$fam"); do
+    local ips; ips=$(resolve "$d" "$fam")
+    [[ -n $ips || $fam == 6 ]] || yellow "  ! $d did not resolve: NOT blocked by IP (check DNS)"
+    for ip in $ips; do
       [[ " ${seen[*]:-} " == *" $ip "* ]] && continue   # dedupe shared CDN IPs
       seen+=("$ip")
       run "$ipt" -A "$CHAIN" -d "$ip" -p tcp -j REJECT --reject-with tcp-reset
@@ -150,10 +162,12 @@ airtight() {
 }
 
 off() {
-  local ipt
+  local ipt hook
   for ipt in "$IPT4" "$IPT6"; do
     [[ -n $ipt ]] || continue
-    while "$ipt" -D OUTPUT -j "$CHAIN" 2>/dev/null; do :; done
+    for hook in "${HOOKS[@]}"; do
+      while "$ipt" -D "$hook" -j "$CHAIN" 2>/dev/null; do :; done
+    done
     "$ipt" -F "$CHAIN" 2>/dev/null || true
     "$ipt" -X "$CHAIN" 2>/dev/null || true
   done
@@ -174,35 +188,41 @@ status() {
 
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo $(( $(date +%s) * 1000 )); }
 
-has_global_v6() {  # any non-loopback global-scope IPv6 address?
-  [[ -r /proc/net/if_inet6 ]] && awk '$4 == "00" && $6 != "lo" {f=1} END {exit !f}' /proc/net/if_inet6
+has_global_v6() {  # a non-loopback global IPv6 address AND a default route to use it
+  [[ -r /proc/net/if_inet6 ]] && awk '$4 == "00" && $6 != "lo" {f=1} END {exit !f}' /proc/net/if_inet6 &&
+    [[ -n $(ip -6 route show default 2>/dev/null) ]]
 }
 
 verify() {
-  local fails=0 rc t0 dt code body host fam
+  local fails=0 rc t0 dt code body host fam err
   local -a rows=()
   for host in api.openai.com api.anthropic.com; do
     for fam in 4 6; do
       if [[ $fam == 6 ]] && ! has_global_v6; then
         rows+=("$host (v6) blocked|SKIP|no global IPv6 address on this host"); continue
       fi
+      # Only a fast TCP reset proves our REJECT fired. DNS failure (6), no route,
+      # TLS/proxy errors or timeouts say nothing about the firewall, so they FAIL.
       rc=0; t0=$(now_ms)
-      curl -"$fam" -s -o /dev/null --max-time 4 "https://$host/" 2>/dev/null || rc=$?
+      err=$(curl -"$fam" -s -o /dev/null -w '%{errormsg}' --max-time 4 "https://$host/" 2>/dev/null) || rc=$?
       dt=$(( $(now_ms) - t0 ))
-      if [[ $rc -ne 0 && $rc -ne 28 && $dt -le 3000 ]]; then
-        rows+=("$host (v$fam) blocked|PASS|curl exit $rc in ${dt} ms")
+      if [[ $rc -eq 7 && $err == *refused* && $dt -le 3000 ]]; then
+        rows+=("$host (v$fam) blocked|PASS|reset in ${dt} ms")
       elif [[ $rc -ne 0 ]]; then
-        rows+=("$host (v$fam) blocked|FAIL|curl exit $rc after ${dt} ms (slow/timeout, not reject)"); fails=$((fails+1))
+        rows+=("$host (v$fam) blocked|FAIL|curl exit $rc ${err:0:40} (not our reject)"); fails=$((fails+1))
       else
         rows+=("$host (v$fam) blocked|FAIL|REACHABLE in ${dt} ms"); fails=$((fails+1))
       fi
     done
   done
-  rc=0
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8000/ 2>/dev/null) || rc=$?
-  if [[ $rc -eq 0 ]]; then rows+=("127.0.0.1:8000 reachable|PASS|HTTP $code")
-  elif [[ $rc -eq 7 ]]; then rows+=("127.0.0.1:8000 reachable|INFO|no listener (connection refused)")
-  else rows+=("127.0.0.1:8000 reachable|FAIL|curl exit $rc"); fails=$((fails+1)); fi
+  local port
+  for port in 8000 8001 8002; do
+    rc=0
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/" 2>/dev/null) || rc=$?
+    if [[ $rc -eq 0 ]]; then rows+=("127.0.0.1:$port reachable|PASS|HTTP $code")
+    elif [[ $rc -eq 7 ]]; then rows+=("127.0.0.1:$port reachable|INFO|no listener (connection refused)")
+    else rows+=("127.0.0.1:$port reachable|FAIL|curl exit $rc"); fails=$((fails+1)); fi
+  done
   body=$(curl -s --max-time 10 https://slack.com/api/api.test 2>&1 || true)
   if [[ $body == *'"ok":true'* ]]; then rows+=("slack.com/api/api.test works|PASS|ok:true")
   else rows+=("slack.com/api/api.test works|FAIL|${body:0:50}"); fails=$((fails+1)); fi
