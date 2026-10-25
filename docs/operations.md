@@ -20,7 +20,7 @@ Two runtimes, picked automatically (`VLLM_RUNTIME=docker|pip` to force one):
 | Runtime | When | Notes |
 |---|---|---|
 | `docker` | the NGC image (`VLLM_IMAGE`, default `nvcr.io/nvidia/vllm:26.09-py3`) is present | containers `wl-vllm-<role>`, logs followed into `logs/vllm_<role>.log` |
-| `pip` | otherwise | `.venv-vllm/bin/vllm`; Python headers unpacked into `.venv-vllm/sysroot` for Triton's JIT (no root) |
+| `pip` | otherwise | `.venv-vllm/bin/vllm`, built from the pinned `scripts/vllm-requirements.lock` by `scripts/serve_models.sh install`; Python headers unpacked into `.venv-vllm/sysroot` for Triton's JIT (no root) |
 
 Logs: `logs/vllm_<role>.log`. Endpoints are loopback only; override per role with
 `WRECKLESS_<ROLE>_URL` / `WRECKLESS_<ROLE>_MODEL` (roles: `RED`, `BLUE`, `BLUE_FALLBACK`, `VICTIM`).

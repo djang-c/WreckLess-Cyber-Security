@@ -9,6 +9,7 @@
 # Usage: scripts/serve_models.sh [all|blue|red|victim]
 #   runtime: VLLM_RUNTIME=docker (NGC image, default when present) | pip (.venv-vllm)
 #   stop:    scripts/serve_models.sh stop
+#   install: scripts/serve_models.sh install   (re)build .venv-vllm from scripts/vllm-requirements.lock
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VLLM=${VLLM:-.venv-vllm/bin/vllm}
@@ -16,6 +17,12 @@ VLLM=${VLLM:-.venv-vllm/bin/vllm}
 IMAGE=${VLLM_IMAGE:-nvcr.io/nvidia/vllm:26.09-py3}
 EXTRA=${VLLM_EXTRA:-}   # e.g. VLLM_EXTRA=--enforce-eager if CUDA graphs misbehave on sm_121
 mkdir -p logs
+
+if [[ ${1:-} == install ]]; then
+  # the exact venv that runs on the GB10; `uv pip install vllm` today may resolve something untested
+  [[ -x .venv-vllm/bin/python ]] || uv venv -q .venv-vllm --python 3.12
+  exec uv pip sync -p .venv-vllm --torch-backend=auto scripts/vllm-requirements.lock
+fi
 
 if id -nG | grep -qw docker; then D() { "$@"; }; else D() { sg docker -c "$(printf '%q ' "$@")"; }; fi
 if [[ -z ${VLLM_RUNTIME:-} ]]; then
