@@ -16,10 +16,13 @@ from wreckless.events import EventLog
 LIFECYCLE = {
     "queued": {"verifying"},
     "verifying": {"verified", "rejected"},
-    "verified": {"patching"},
+    "verified": {"patching", "patch_failed"},      # patch_failed: crashed before Blue started
     "patching": {"patched", "patch_failed"},
-    "patched": {"notified"},
+    "patched": {"notified", "notify_failed"},      # fix committed, but notifying crashed
 }
+# Every in-flight state has a terminal failure, so a crash or restart never strands an item.
+FAILURE = {"verifying": "rejected", "verified": "patch_failed", "patching": "patch_failed",
+           "patched": "notify_failed"}
 LABEL = {"verified": "VERIFIED", "rejected": "REJECTED"}
 
 SCHEMA = """
@@ -67,7 +70,10 @@ class CandidateQueue:
         with self._lock:
             return self.conn.execute(sql, args).fetchall()
 
-    def enqueue(self, source: str, title: str, cve: str | None = None, payload: dict | None = None) -> str:
+    def enqueue(self, source: str, title: str, cve: str | None = None, payload: dict | None = None,
+                claim: str | None = None) -> str:
+        """Add an item. ``claim=actor`` also moves it to ``verifying`` in the same transaction,
+        so no worker ever sees it queued (the hero's item belongs to the hero)."""
         now = time.time()
         with self._write():
             n = self.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] + 1
@@ -75,7 +81,11 @@ class CandidateQueue:
             self.conn.execute("INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?)",
                               (item_id, source, cve, title, "queued", "PREDICTION",
                                json.dumps(payload or {}), "[]", now, now))
+            if claim:
+                self._move(self.get(item_id), "verifying", claim, {})
         self.events.emit("core", "enqueue", item_id, source=source, title=title)
+        if claim:
+            self._announce(item_id, "queued", "verifying", claim, {})
         return item_id
 
     def get(self, item_id: str) -> Item:
@@ -83,22 +93,40 @@ class CandidateQueue:
                          "FROM items WHERE id=?", (item_id,))[0]
         return Item(*row[:6], json.loads(row[6]), json.loads(row[7]))
 
+    def _move(self, item: Item, new: str, actor: str, data: dict, label: str | None = None) -> None:
+        """One transition; the caller holds the write transaction."""
+        if new not in LIFECYCLE.get(item.state, set()):
+            raise RuntimeError(f"{item.id}: illegal transition {item.state} -> {new}")
+        history = item.history + [{"t": time.time(), "from": item.state, "to": new, "actor": actor, **data}]
+        cur = self.conn.execute(
+            "UPDATE items SET state=?, label=?, history=?, updated=? WHERE id=? AND state=?",
+            (new, label or LABEL.get(new, item.label), json.dumps(history), time.time(), item.id, item.state))
+        if cur.rowcount != 1:  # moved by someone else since we read it
+            raise RuntimeError(f"{item.id}: {item.state} -> {new} lost a race")
+
+    def _announce(self, item_id: str, frm: str, new: str, actor: str, data: dict) -> None:
+        self.events.emit(actor, "transition", item_id, frm=frm, to=new, data=data)
+        ui.transition(item_id, frm, new, actor)
+
     def advance(self, item_id: str, new: str, actor: str, label: str | None = None, **data) -> Item:
         """``label`` overrides the state's default label (e.g. REACHABLE instead of VERIFIED)."""
         with self._write():
             item = self.get(item_id)
-            if new not in LIFECYCLE.get(item.state, set()):
-                raise RuntimeError(f"{item_id}: illegal transition {item.state} -> {new}")
-            item.history.append({"t": time.time(), "from": item.state, "to": new, "actor": actor, **data})
-            label = label or LABEL.get(new, item.label)
-            cur = self.conn.execute(
-                "UPDATE items SET state=?, label=?, history=?, updated=? WHERE id=? AND state=?",
-                (new, label, json.dumps(item.history), time.time(), item_id, item.state))
-            if cur.rowcount != 1:  # moved by someone else since we read it
-                raise RuntimeError(f"{item_id}: {item.state} -> {new} lost a race")
-        self.events.emit(actor, "transition", item_id, frm=item.state, to=new, data=data)
-        ui.transition(item_id, item.state, new, actor)
+            self._move(item, new, actor, data, label)
+        self._announce(item_id, item.state, new, actor, data)
         return self.get(item_id)
+
+    def claim_next(self, actor: str = "gate") -> str | None:
+        """Atomically take the oldest queued item into ``verifying`` (pick + claim, one txn)."""
+        with self._write():
+            rows = self.conn.execute(
+                "SELECT id FROM items WHERE state='queued' ORDER BY created LIMIT 1").fetchall()
+            if not rows:
+                return None
+            item = self.get(rows[0][0])
+            self._move(item, "verifying", actor, {})
+        self._announce(item.id, "queued", "verifying", actor, {})
+        return item.id
 
     def update_payload(self, item_id: str, **fields) -> None:
         with self._write():
@@ -113,15 +141,15 @@ class CandidateQueue:
             return None
 
     def fail(self, item_id: str, actor: str, reason: str) -> None:
-        """Move an in-flight item to its terminal failure state (no-op if it has none)."""
-        terminal = {"queued": None, "verifying": "rejected", "verified": None,
-                    "patching": "patch_failed"}.get(self.get(item_id).state)
+        """Move an in-flight item to its terminal failure state (no-op if it is not in flight)."""
+        terminal = FAILURE.get(self.get(item_id).state)
         if terminal:
             self.try_advance(item_id, terminal, actor, reason=reason)
 
     def recover(self) -> list[str]:
         """After a crash, nothing is really in flight: fail items left mid-verify/patch."""
-        stuck = [r[0] for r in self._read("SELECT id FROM items WHERE state IN ('verifying', 'patching')")]
+        marks = ",".join("?" * len(FAILURE))
+        stuck = [r[0] for r in self._read(f"SELECT id FROM items WHERE state IN ({marks})", tuple(FAILURE))]
         for item_id in stuck:
             self.fail(item_id, "core", "interrupted (process restarted)")
         return stuck

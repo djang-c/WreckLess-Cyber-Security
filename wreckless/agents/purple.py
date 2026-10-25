@@ -63,11 +63,15 @@ def ingest(cve: str, s: Settings, db: IntelDB | None = None, repo: Path | None =
         if repo and not intel.get("affected_file"):
             brief["repo_files"] = sorted(str(p.relative_to(repo)) for p in repo.rglob("*.py")
                                          if ".git" not in p.parts)[:200]
-        out = client.chat.completions.create(
-            model=s.red.model, temperature=0, max_tokens=600,
-            messages=[{"role": "system", "content": HYPOTHESIS_SYS},
-                      {"role": "user", "content": json.dumps(brief)}])
-        text = out.choices[0].message.content or ""
+        try:
+            out = client.chat.completions.create(
+                model=s.red.model, temperature=0, max_tokens=600,
+                messages=[{"role": "system", "content": HYPOTHESIS_SYS},
+                          {"role": "user", "content": json.dumps(brief)}])
+            text = out.choices[0].message.content or ""
+        except Exception as e:  # the hypothesis is optional; a dead model must not lose the item
+            ui.say("purple", f"no hypothesis — LLM error: {type(e).__name__}: {str(e)[:200]}")
+            return intel
         try:
             intel["hypothesis"] = json.loads(text[text.find("{"): text.rfind("}") + 1])
         except ValueError:

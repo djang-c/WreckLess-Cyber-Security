@@ -1,5 +1,7 @@
 """Blue / Hard Hat: patch the victim, emit a runtime policy. Validation is run by the orchestrator."""
 import ast
+import codecs
+import dataclasses
 import json
 import os
 import re
@@ -11,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from wreckless import llm, ui
+from wreckless.agents import red
 from wreckless.config import BENCHMARKS, Settings
 from wreckless.gitops import git
 from wreckless.sandbox import Enclave
@@ -52,8 +55,9 @@ def forbidden(rel: str) -> str | None:
 
 def _changed_paths(wt: Path, base: str) -> list[str]:
     """Tracked changes vs base plus every untracked file (ignored ones included)."""
-    tracked = git(wt, "diff", "--name-only", "--no-renames", base).splitlines()
-    untracked = git(wt, "ls-files", "--others").splitlines()
+    # -z: unusual names come back raw, not C-quoted ("tests/x" would dodge the tests/ check)
+    tracked = git(wt, "diff", "--name-only", "-z", "--no-renames", base).split("\0")
+    untracked = git(wt, "ls-files", "-z", "--others").split("\0")
     return sorted(set(tracked + untracked) - {""})
 
 
@@ -67,12 +71,47 @@ def _patch_violations(wt: Path, base: str) -> list[str]:
     return bad
 
 
-_DIFF_PATH = re.compile(r"^(?:diff --git a/(\S+) b/(\S+)|(?:---|\+\+\+) (?:[ab]/)?([^\t\n]+)|"
-                        r"(?:rename|copy) (?:from|to) (\S+))", re.M)
+# A path is either git's C-quoted form ("a/x\"y") or a bare token.
+_Q = r'"(?:[^"\\\n]|\\.)*"'
+_DIFF_PATH = re.compile(rf"^(?:diff --git ({_Q}|\S+) ({_Q}|\S+)|(?:---|\+\+\+) ({_Q}|[^\t\n]+)|"
+                        rf"(?:rename|copy) (?:from|to) ({_Q}|[^\n]+))", re.M)
+
+
+def _unquote(p: str) -> str:
+    p = p.strip()
+    if len(p) >= 2 and p[0] == p[-1] == '"':
+        p = codecs.escape_decode(p[1:-1].encode())[0].decode("utf-8", "replace")
+    return p
 
 
 def _diff_paths(diff: str) -> set[str]:
-    return {g.strip() for m in _DIFF_PATH.finditer(diff) for g in m.groups() if g and g.strip() != "/dev/null"}
+    """Every path a unified diff touches: header regex (quoted or bare) plus git's own parse."""
+    out = set()
+    for m in _DIFF_PATH.finditer(diff):
+        for i, g in enumerate(m.groups()):
+            if not g:
+                continue
+            p = _unquote(g)
+            if i < 3 and p[:2] in ("a/", "b/"):   # diff --git / ---/+++ carry a/ b/ prefixes
+                p = p[2:]
+            if p != "/dev/null":
+                out.add(p)
+    # git's parser is the one that applies the patch, so ask it too (-z: no quoting at all)
+    p = subprocess.run(["git", "apply", "--numstat", "-z", "-"], input=diff.encode(),
+                       capture_output=True)
+    fields = p.stdout.decode("utf-8", "replace").split("\0") if p.returncode == 0 else []
+    i = 0
+    while i < len(fields):
+        rec = fields[i].split("\t")
+        if len(rec) == 3 and rec[2]:
+            out.add(rec[2])
+            i += 1
+        elif len(rec) == 3:                    # rename/copy: "add\tdel\t\0old\0new\0"
+            out.update(f for f in fields[i + 1:i + 3] if f)
+            i += 3
+        else:
+            i += 1
+    return out
 
 
 @dataclass
@@ -102,9 +141,32 @@ def _unescape(s: str) -> str:
     return s.replace("\\n", "\n").replace("\\t", "\t")
 
 
+def _exploit_mode(report: dict, s: Settings | None) -> tuple[list[str], dict]:
+    """argv + env the gate verified the exploit with: re-runs must use the same mode, or a
+    still-exploitable patch would 'block' an exploit that simply ran in the wrong mode."""
+    if not report.get("agentic"):
+        return [], {}
+    s = dataclasses.replace(s or Settings(), agentic_exploit=True)
+    return red.exploit_args(s), red.victim_env(s)
+
+
+def _exploit_verdict(r) -> tuple[bool, str]:
+    """Blocked iff the host-checked oracle was not reached. The exploit's stdout and exit code
+    are never consulted (an LLM exploit may exit 0 on a miss), except that a run killed by
+    the timeout is inconclusive and does not count as blocked."""
+    if r.hit:
+        return False, "oracle reached"
+    if r.returncode == 124 or r.output.startswith("TIMEOUT"):
+        return False, "inconclusive: exploit run timed out"
+    if r.returncode not in (0, 1, None):
+        return True, f"oracle not reached (exploit crashed, exit {r.returncode})"
+    return True, "oracle not reached"
+
+
 class BlueTools:
-    def __init__(self, wt: Path, enclave: Enclave, report: dict, item_dir: Path):
+    def __init__(self, wt: Path, enclave: Enclave, report: dict, item_dir: Path, s: Settings | None = None):
         self.wt, self.enclave, self.report, self.dir = wt, enclave, report, item_dir
+        self.args, self.env = _exploit_mode(report, s)
         self.tests_ok = self.exploit_blocked = False
 
     def _path(self, path: str) -> Path | None:
@@ -163,9 +225,11 @@ class BlueTools:
 
     def run_exploit(self) -> str:
         script = Path(self.report["repro_script"])
-        r = self.enclave.run_exploit(script, self.wt, env=_deny_benchmarks(script))
-        self.exploit_blocked = not r.hit
-        return ("BLOCKED: oracle not reached\n" if not r.hit else "STILL EXPLOITABLE\n") + r.output[-2000:]
+        r = self.enclave.run_exploit(script, self.wt, self.args, _deny_benchmarks(script) | self.env)
+        self.exploit_blocked, why = _exploit_verdict(r)
+        head = (f"BLOCKED: {why}" if self.exploit_blocked else "STILL EXPLOITABLE" if r.hit
+                else f"NOT CONFIRMED BLOCKED: {why}")
+        return head + "\n" + r.output[-2000:]
 
     def generate_openshell_egress_rule(self, domain: str) -> str:
         policy = {"version": 1, "name": f"wreckless-{self.report['id']}",
@@ -264,8 +328,10 @@ def _held_out(enclave: Enclave, wt: Path, test: Path, adapter: Path | None = Non
         shutil.rmtree(run, ignore_errors=True)
 
 
-def validate(wt: Path, enclave: Enclave, report: dict, target: Target | None = None) -> Validation:
-    """Final checks, run by the orchestrator (never by Blue): held-out tests + exploit + functional."""
+def validate(wt: Path, enclave: Enclave, report: dict, target: Target | None = None,
+             s: Settings | None = None) -> Validation:
+    """Final checks, run by the orchestrator (never by Blue): held-out tests + exploit + functional.
+    The exploit re-runs in the mode the gate verified it in (``report["agentic"]``)."""
     target = target or default_target()
     gating = [t for t in (target.heldout(report.get("cve"), f) for f in GATING) if t]
     reported = [t for t in (target.heldout(report.get("cve"), f) for f in REPORTED) if t]
@@ -288,40 +354,75 @@ def validate(wt: Path, enclave: Enclave, report: dict, target: Target | None = N
         r = _held_out(enclave, wt, t, target.adapter)
         hardening, logs[t.stem] = f"{r.passed}/{r.passed + r.failed}", r.output
     fun = _pytest(enclave, wt, target.functional_tests)
-    exp = enclave.run_exploit(Path(report["repro_script"]), wt)
-    logs |= {"functional": fun.output, "exploit": exp.output}
-    # Host-side verdict: the nonce is not in the oracle file AND the exploit process itself
-    # exited non-zero. Nothing the patched code prints is consulted.
-    blocked = not exp.hit and exp.returncode != 0
+    args, env = _exploit_mode(report, s)
+    exp = enclave.run_exploit(Path(report["repro_script"]), wt, args, env)
+    # Host-side verdict from the oracle file alone (see _exploit_verdict); nothing the
+    # patched code or the exploit prints is consulted.
+    blocked, why = _exploit_verdict(exp)
+    logs |= {"functional": fun.output, "exploit": f"[verdict] {why}\n{exp.output}"}
     return Validation(regression, fun.returncode == 0, blocked, hardening, logs)
+
+
+def worktree_diff(wt: Path) -> str:
+    """The whole patch vs HEAD, new files included (intent-to-add makes `git diff` show them)."""
+    git(wt, "add", "--intent-to-add", "--all")
+    d = git(wt, "diff", "--binary", "HEAD")
+    return d + "\n" if d else ""
+
+
+def _reset(wt: Path) -> None:
+    """Drop every change, tracked or not, so nothing an earlier attempt left gets committed."""
+    git(wt, "reset", "-q", "--hard", "HEAD")
+    git(wt, "clean", "-fdxq")
+
+
+def _endpoints(s: Settings) -> list:
+    """Primary Blue, then the fallback for ANY primary failure (down, model not served, error)."""
+    return [s.blue] + ([s.blue_fallback] if s.blue_fallback != s.blue else [])
 
 
 def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings,
            target: Target | None = None) -> tuple[str, str]:
-    tools = BlueTools(wt, enclave, report, item_dir)
-    ep = s.blue if llm.reachable(s.blue) else s.blue_fallback
-    if s.use_llm and llm.reachable(ep):
-        ui.say("blue", f"engaging {ep.model} — remediating {report['id']}")
+    tools = BlueTools(wt, enclave, report, item_dir, s)
+    failure = None  # why no Blue LLM could be used, if none could
+    if s.use_llm:
         public = {k: v for k, v in report.items() if k != "attack_trace"} | {"attack_trace": report["attack_trace"][-1500:]}
-        llm.run_agent(ep, "blue", SYSTEM, "Vulnerability report:\n" + json.dumps(public, indent=2), tools.tools(),
-                      lambda: tools.tests_ok and tools.exploit_blocked,
-                      max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.2)
-        if git(wt, "diff"):
-            if not (item_dir / "openshell_policy.json").exists():
-                tools.generate_openshell_egress_rule("none")
-            return git(wt, "diff"), "llm"
-        ui.say("blue", "LLM produced no patch")
-        if not s.demo_mode:
+        eps = _endpoints(s)
+        for n, ep in enumerate(eps):
+            more = " — trying fallback" if n + 1 < len(eps) else ""
+            if not llm.reachable(ep):
+                failure = f"LLM unreachable at {ep.url}"
+                if more:
+                    ui.say("blue", failure + more)
+                continue
+            ui.say("blue", f"engaging {ep.model} — remediating {report['id']}")
+            try:
+                llm.run_agent(ep, "blue", SYSTEM, "Vulnerability report:\n" + json.dumps(public, indent=2),
+                              tools.tools(), lambda: tools.tests_ok and tools.exploit_blocked,
+                              max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.2)
+            except llm.LLMError as e:
+                failure = f"LLM error: {e}"
+                ui.say("blue", failure + more)
+                _reset(wt)   # a half-finished attempt is not a patch
+                tools.tests_ok = tools.exploit_blocked = False
+                continue
+            failure = None
+            if diff := worktree_diff(wt):
+                if not (item_dir / "openshell_policy.json").exists():
+                    tools.generate_openshell_egress_rule("none")
+                return diff, "llm"
+            ui.say("blue", "LLM produced no patch")
+            break
+        if not failure and not s.demo_mode:
             return "", "llm"
 
     bench = (target or default_target()).bench(report.get("cve"))
     known = bench / "known_good" / "fix.patch" if bench else None
     if not known or not known.exists():
         return "", "none"
-    why = ("" if not s.use_llm else " (demo-mode fallback)" if llm.reachable(ep)
-           else f" (LLM unreachable at {ep.url})")
+    why = "" if not s.use_llm else f" ({failure})" if failure else " (demo-mode fallback)"
     ui.say("blue", f"applying \033[1;43;30m {CACHED_LABEL} \033[0m" + why)
-    git(wt, "checkout", "-q", "--", ".")
+    _reset(wt)   # untracked LLM files must not be committed under the cached label
     ui.detail("blue", tools.git_apply_patch(known.read_text()))
     tools.generate_openshell_egress_rule("none")
-    return git(wt, "diff"), "fallback"
+    return worktree_diff(wt), "fallback"

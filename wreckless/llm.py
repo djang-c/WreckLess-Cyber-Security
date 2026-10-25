@@ -21,6 +21,12 @@ class Tool:
             "name": self.name, "description": self.description, "parameters": self.parameters}}
 
 
+class LLMError(RuntimeError):
+    """The model endpoint failed mid-run (connection, timeout, context overflow, unknown model).
+
+    Raised by ``run_agent`` so callers can fall back instead of crashing the item."""
+
+
 @dataclass
 class AgentResult:
     final: str
@@ -43,10 +49,13 @@ def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[
     by_name = {t.name: t for t in tools}
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
     for step in range(max_steps):
-        resp = client.chat.completions.create(
-            model=ep.model, messages=messages, tools=[t.schema() for t in tools],
-            tool_choice="auto", temperature=temperature, max_tokens=4096)
-        msg = resp.choices[0].message
+        try:
+            resp = client.chat.completions.create(
+                model=ep.model, messages=messages, tools=[t.schema() for t in tools],
+                tool_choice="auto", temperature=temperature, max_tokens=4096)
+            msg = resp.choices[0].message
+        except Exception as e:  # API/transport errors become one type the agents can catch
+            raise LLMError(f"{ep.model} at {ep.url}: {type(e).__name__}: {str(e)[:200]}") from e
         messages.append(msg.model_dump(exclude_none=True))
         if msg.content:
             ui.detail(role, msg.content.strip())
