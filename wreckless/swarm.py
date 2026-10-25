@@ -140,7 +140,9 @@ class Swarm:
         args = ["--agentic"] if self.s.agentic_exploit else []
         if script:
             ui.mascot("gate")
-        verdict = gate.verify(script, red_wt, enclave, args, red._victim_env(self.s)) if script else None
+        ref = BENCHMARKS / str(item.cve) / "known_good" / "fix.patch" if item.cve else None
+        verdict = gate.verify(script, red_wt, enclave, args, red._victim_env(self.s),
+                              reference_patch=ref) if script else None
         if not verdict or not verdict.verified:
             reason = verdict.reason if verdict else "no exploit proposed"
             self.queue.advance(item_id, "rejected", "gate", reason=reason)
@@ -151,7 +153,7 @@ class Swarm:
             "id": item_id, "cve": item.cve, "commit": commit, "source": item.source,
             "affected_file": item.payload.get("intel", {}).get("affected_file") or item.payload.get("file"),
             "repro_script": str(script), "exploit_source": source,
-            "oracle": {"verdict": verdict.reason, "via": verdict.result.via_victim,
+            "oracle": {"verdict": verdict.reason, "via": verdict.result.via_victim, "control": verdict.control,
                        "backend": verdict.result.backend},
             "attack_trace": verdict.result.output[-2000:], "agentic": self.s.agentic_exploit,
         }

@@ -82,7 +82,7 @@ flowchart TB
     R & X & F --> OK["✅ PATCH_VALIDATED"]
 ```
 
-**Exploit oracle:** Red's script must make the *vulnerable code path itself* write a random nonce into a file inside the run directory. The orchestrator holds the nonce and checks the file itself; a crash, a guess, or a printed "success" doesn't count.
+**Exploit oracle:** Red's script must make the *vulnerable code path itself* write a random nonce into a file inside the run directory. The orchestrator holds the nonce and checks the file itself; a crash, a guess, or a printed "success" doesn't count. The gate is **differential**: the same script then runs against a control tree without the flaw (the reference-patched tree for known CVEs, otherwise a "null victim" with every victim module emptied) and must **not** reach the oracle there. Anything an exploit forges in its own process (writing the nonce, faking the provenance record) works equally on the control, so it is rejected (`tests/test_gate.py`).
 
 > [!NOTE]
 > The upstream LangChain fix ([`7b13292`](https://github.com/langchain-ai/langchain/commit/7b13292e3544b2f5f2bfb8a27a062ea2b0c34561)) shipped **without** a regression test, so our held-out tests are written by WreckLess, derived from the upstream diff (they are not upstream's or a maintainer's tests). They run from a pristine copy with `--noconftest` in their own rootdir, and Blue's patch is rejected if it touches `tests/`, `conftest.py`, pytest/packaging config or `sitecustomize.py`. We also test that this oracle **fails on the unpatched code**; otherwise passing it would prove nothing.

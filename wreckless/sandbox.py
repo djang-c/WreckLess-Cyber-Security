@@ -174,7 +174,7 @@ class Enclave:
             shutil.copy(script, staged)
             script = staged
         oracle = self.root / "tmp" / f"oracle_{token}"
-        prov = self.root / ".enclave" / f"prov_{token}.json"
+        prov = self.root / ".enclave" / f"prov_{secrets.token_hex(6)}.json"  # not derivable from the oracle path
         nonce = secrets.token_hex(12)
         r = self.run([self.python, str(script), str(victim), *extra_args], env={
             "WRECKLESS_ORACLE": str(oracle), "WRECKLESS_NONCE": nonce,
