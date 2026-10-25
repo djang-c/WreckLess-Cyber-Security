@@ -22,6 +22,7 @@ Known limit: the provenance record is made inside the exploit's process (userlan
 so code written specifically to beat the gate (e.g. by digging the guard's state out of
 gc) can still forge it. The gate is built to catch a model's false claims of success.
 """
+import os
 import secrets
 import shutil
 import subprocess
@@ -56,9 +57,17 @@ def _null_victim(tree: Path) -> None:
 
 def _neutralize(tree: Path, reference_patch: Path | None) -> str:
     if reference_patch and reference_patch.is_file():
-        p = subprocess.run(["git", "apply", "--recount", str(reference_patch.resolve())], cwd=tree,
+        # The tree usually sits inside some other git repo (runs/ is under ours). There `git apply`
+        # resolves paths from that repo's root and silently skips everything outside cwd: exit 0,
+        # nothing patched. Stop repo discovery at the tree, and check the patch now reverses cleanly.
+        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tree.resolve().parent)}
+        patch = str(reference_patch.resolve())
+        p = subprocess.run(["git", "apply", "--recount", patch], cwd=tree, env=env,
                            capture_output=True, text=True)
-        if p.returncode == 0:
+        landed = p.returncode == 0 and subprocess.run(
+            ["git", "apply", "--recount", "--reverse", "--check", patch], cwd=tree, env=env,
+            capture_output=True).returncode == 0
+        if landed:
             return "reference-patched"
         ui.say("gate", f"reference patch does not apply here ({p.stderr.strip()[:80]}) → null-victim control")
     _null_victim(tree)
