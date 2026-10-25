@@ -64,7 +64,17 @@ Never commit tokens. Keep them in an untracked `.env` / shell profile.
 uv sync --extra slack                 # adds slack-bolt (optional; core pipeline does not need it)
 ```
 
-## 4. Run
+## 4. Check offline first (sends nothing)
+
+```bash
+source .env && uv run python -m wreckless.slack_socket --check
+```
+
+This checks offline that the token prefixes are right (`xoxb-`, `xapp-`), that `SLACK_CHANNEL` is a channel ID (not a
+`#name`), that `SLACK_APPROVERS` are member IDs (not names), and that slack-bolt is installed. It
+makes no network calls and prints only token prefixes. Exit 0 = ready for the first real card.
+
+## 5. Run
 
 The listener is a daemon thread, so it dies when `wreckless run` exits. To keep the
 buttons clickable after the run, run the listener as its own process:

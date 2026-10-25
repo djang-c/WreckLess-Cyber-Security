@@ -192,3 +192,53 @@ def test_listener_runs_in_daemon_thread_and_swallows_errors(monkeypatch, capsys)
     h.thread.join(timeout=5)
     assert "listener stopped: invalid_auth" in capsys.readouterr().err
     h.stop()
+
+
+# ---------- offline preflight: python -m wreckless.slack_socket --check (no network) ----------
+
+GOOD = {"SLACK_BOT_TOKEN": "xoxb-1-2-abc", "SLACK_APP_TOKEN": "xapp-1-A1-2-def",
+        "SLACK_CHANNEL": "C0123ABCD", "SLACK_APPROVERS": "U01AB,U02CD"}
+
+
+def _check(monkeypatch, env, bolt=True):
+    for k in ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_CHANNEL", "SLACK_APPROVERS", "SLACK_WEBHOOK_URL"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(slack_socket, "_bolt_installed", lambda: bolt)
+    return slack_socket.preflight()
+
+
+def test_preflight_all_good(monkeypatch):
+    ok, rows = _check(monkeypatch, GOOD)
+    assert ok and all(r[1] == "PASS" for r in rows)
+
+
+@pytest.mark.parametrize("key,val,needle", [
+    ("SLACK_BOT_TOKEN", "xapp-oops", "xoxb-"),
+    ("SLACK_APP_TOKEN", "xoxb-oops", "xapp-"),
+    ("SLACK_CHANNEL", "#wreckless-demo", "channel ID"),
+    ("SLACK_APPROVERS", "kevin,jang", "member ID"),
+    ("SLACK_APPROVERS", "", "nobody can approve"),
+])
+def test_preflight_flags_each_mistake(monkeypatch, key, val, needle):
+    ok, rows = _check(monkeypatch, GOOD | {key: val})
+    assert not ok and any(r[1] == "FAIL" and needle in r[2] for r in rows), rows
+
+
+def test_preflight_flags_missing_bolt(monkeypatch):
+    ok, rows = _check(monkeypatch, GOOD, bolt=False)
+    assert not ok and any("uv sync --extra slack" in r[2] for r in rows)
+
+
+def test_preflight_never_prints_secrets(monkeypatch, capsys):
+    _check(monkeypatch, GOOD)
+    slack_socket.print_preflight(*slack_socket.preflight())
+    out = capsys.readouterr().out
+    assert "abc" not in out and "def" not in out and "xoxb-…" in out
+
+
+def test_preflight_makes_no_network_calls(monkeypatch):
+    import socket
+    monkeypatch.setattr(socket.socket, "connect", lambda *a, **k: pytest.fail("network used"))
+    _check(monkeypatch, GOOD)

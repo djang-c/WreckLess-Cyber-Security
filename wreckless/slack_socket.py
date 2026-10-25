@@ -177,6 +177,49 @@ def _enabled() -> tuple[bool, str]:
     return True, "enabled"
 
 
+def _bolt_installed() -> bool:
+    try:
+        from slack_bolt.adapter.socket_mode import SocketModeHandler  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _mask(v: str) -> str:
+    return (v[:5] + "…") if v else "(unset)"
+
+
+def preflight() -> tuple[bool, list[tuple[str, str, str]]]:
+    """Offline check of the Slack env (no network, nothing sent): rows of (check, PASS|FAIL, detail)."""
+    env = os.environ.get
+    rows = []
+
+    def row(name, good, detail_ok, detail_bad):
+        rows.append((name, "PASS" if good else "FAIL", detail_ok if good else detail_bad))
+
+    bot, app, ch = env("SLACK_BOT_TOKEN", ""), env("SLACK_APP_TOKEN", ""), env("SLACK_CHANNEL", "")
+    row("SLACK_BOT_TOKEN", bot.startswith("xoxb-"), f"{_mask(bot)} (posts + updates the card)",
+        f"{_mask(bot)}: must be the Bot User OAuth Token, starting xoxb-")
+    row("SLACK_APP_TOKEN", app.startswith("xapp-"), f"{_mask(app)} (Socket Mode buttons)",
+        f"{_mask(app)}: must be an App-Level Token with connections:write, starting xapp-")
+    row("SLACK_CHANNEL", bool(re.fullmatch(r"[CG][A-Z0-9]{6,}", ch)), f"{ch} (clicks from other channels ignored)",
+        f"{ch or '(unset)'}: use the channel ID (channel name → About → bottom, e.g. C0123ABCD), "
+        "not the #name")
+    raw = [u.strip() for u in env("SLACK_APPROVERS", "").split(",") if u.strip()]
+    bad = [u for u in raw if not re.fullmatch(r"[UW][A-Z0-9]{2,}", u)]
+    row("SLACK_APPROVERS", bool(raw) and not bad, f"{len(raw)} approver(s): {', '.join(raw)}",
+        "unset: nobody can approve" if not raw else
+        f"{', '.join(bad)}: use member IDs (profile → ⋮ → Copy member ID, e.g. U01AB), not names")
+    row("slack-bolt installed", _bolt_installed(), "yes", "no: uv sync --extra slack")
+    return all(r[1] == "PASS" for r in rows), rows
+
+
+def print_preflight(ok: bool, rows: list[tuple[str, str, str]]) -> None:
+    for name, res, detail in rows:
+        print(f"{name:<22} {res:<5} {detail}")
+    print("SLACK PREFLIGHT: " + ("PASS (offline check only: nothing was sent)" if ok else "FAIL"))
+
+
 def _build_handler(on_approve, on_reject, runs_dir: Path = ITEMS):
     from slack_bolt import App
     from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -212,6 +255,10 @@ def start_listener(on_approve: Decision | None = None, on_reject: Decision | Non
 
 
 def main() -> int:
+    if "--check" in sys.argv[1:]:
+        ok, rows = preflight()
+        print_preflight(ok, rows)
+        return 0 if ok else 1
     ok, why = _enabled()
     if not ok:
         _log(why)
