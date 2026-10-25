@@ -171,7 +171,10 @@ def test_guard_state_is_not_importable(tmp_path):
     assert "NAMES []" in out, out
 
 
-def test_vulnerable_and_control_trees_look_alike(tmp_path):
+def test_vulnerable_and_control_trees_look_alike(tmp_path, monkeypatch):
+    # The layout is the gate's, not the backend's. Under OpenShell every run re-uploads the
+    # workdir (the appended log keeps only the last run) and sees /sandbox paths, so check it here.
+    monkeypatch.setenv("WRECKLESS_SANDBOX", "userland")
     victim, enclave = _item(tmp_path)
     probe = tmp_path / "paths.py"
     probe.write_text("import os, sys\nopen(os.path.join(os.environ['WRECKLESS_SANDBOX_ROOT'], 'seen.txt'), 'a')"
