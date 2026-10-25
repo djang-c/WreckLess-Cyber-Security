@@ -32,13 +32,79 @@ def _clip(text: str, limit: int) -> str:
 
 
 def beat_outcome(title: str) -> str:
-    """'ok' (final success), 'fail', or 'progress' — derived from the beat title cli.py sends."""
+    """'ok' (final success), 'fail', 'rejected' or 'progress', from the beat title swarm.py sends."""
     t = title.lower()
-    if "fail" in t or "❌" in title:
+    if "fail" in t or "crashed" in t or "❌" in title:
         return "fail"
+    if "gate rejected" in t:
+        return "rejected"
     if "fix branch ready" in t:  # swarm's final success beat
         return "ok"
     return "progress"
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)")
+
+
+def diffstat(diff: str, max_files: int = 6) -> str:
+    """'2 files · +3 −1 · a.py (+2 −1), b.py (+1)' from a unified diff. Pure."""
+    files: dict[str, list[int]] = {}
+    cur = None
+    for line in diff.splitlines():
+        m = _DIFF_FILE.match(line)
+        if m:
+            cur = files.setdefault(m.group(2), [0, 0])
+        elif cur is not None and line.startswith("+") and not line.startswith("+++"):
+            cur[0] += 1
+        elif cur is not None and line.startswith("-") and not line.startswith("---"):
+            cur[1] += 1
+    if not files:
+        return "no changes"
+    add, rem = sum(a for a, _ in files.values()), sum(r for _, r in files.values())
+    per = [f"{f} (" + " ".join(x for x in (f"+{a}" if a else "", f"−{r}" if r else "") if x) + ")"
+           for f, (a, r) in list(files.items())[:max_files]]
+    more = f", +{len(files) - max_files} more" if len(files) > max_files else ""
+    return f"{len(files)} file{'s' * (len(files) != 1)} · +{add} −{rem} · " + ", ".join(per) + more
+
+
+def _tail(text: str, n: int) -> str:
+    text = _ANSI.sub("", text or "").strip().replace("```", "'''")
+    return ("…" + text[-n:]) if len(text) > n else text
+
+
+def fixed_body(branch: str, commit: str, src_label: str, summary: str, elapsed_s: float, diff: str,
+               excerpt: int = 900) -> str:
+    """Final success card: summary + a short excerpt. The full patch goes to the draft PR on Approve."""
+    short = diff[:excerpt].replace("```", "'''")
+    cut = " (excerpt; full diff in the draft PR after Approve)" if len(diff) > excerpt else ""
+    return _clip(f"Branch `{branch}` @ `{commit[:10]}` · {src_label}\n{summary} · {elapsed_s:.0f}s\n"
+                 f"Changes: {diffstat(diff)}{cut}\n```{short}```", TEXT_MAX)
+
+
+def patch_failed_body(summary: str, failed: list[str], logs: dict, diff: str, item_dir: str,
+                      patch_source: str | None) -> str:
+    """Patch-failed card: which checks failed, a diff summary and the end of each failing log."""
+    keys = {"held-out regression": ("regression_test", "static_test"), "functional": ("functional",),
+            "exploit blocked": ("exploit",), "patch rules": ("rejected",)}
+    parts = [f"Failed: *{', '.join(failed) or 'no patch produced'}*", summary,
+             f"Changes: {diffstat(diff)} · patch: {patch_source or 'none'}"]
+    budget = max(300, (TEXT_MAX - 600) // max(1, len(failed)))
+    for name in failed:
+        for k in keys.get(name, (name,)):
+            if logs.get(k):
+                parts.append(f"`{k}` (end of log):\n```{_tail(logs[k], min(budget, 900))}```")
+    parts.append(f"Item dir on the host: `{item_dir}` (validation.json, fix.patch)")
+    return _clip("\n".join(parts), TEXT_MAX)
+
+
+def rejected_body(title: str, reason: str, script: str | None, control: str | None, output: str,
+                  item_dir: str) -> str:
+    """Gate-rejected card: why the claim was not reproduced. Nothing was patched."""
+    return _clip(f"{title[:150]}\nReason: {reason}\n"
+                 f"Exploit: `{script or 'none proposed'}` · control: {control or 'n/a'}\n"
+                 + (f"```{_tail(output, 700)}```\n" if output else "")
+                 + f"Nothing was patched. Item dir: `{item_dir}`", TEXT_MAX)
 
 
 def build_blocks(beats: list[dict], *, cve: str | None = None, elapsed_s: float | None = None,
@@ -51,12 +117,13 @@ def build_blocks(beats: list[dict], *, cve: str | None = None, elapsed_s: float 
     last = beats[-1]
     outcome = beat_outcome(last["title"])
     status = {"ok": ("✅", "Fix branch ready (pending review)"), "fail": ("❌", "Needs a human"),
+              "rejected": ("🛑", "Not reproduced (gate rejected)"),
               "progress": ("⏳", f"{ICONS.get(last['role'], '•')} in progress")}[outcome]
     header = f"{status[0]} WreckLess · {cve or 'run'} · {status[1]}"
     lines = []
     for i, b in enumerate(beats):
-        mark = ("✅" if outcome == "ok" else "❌" if outcome == "fail" else "⏳") \
-            if i == len(beats) - 1 else "✓"
+        mark = ("✅" if outcome == "ok" else "❌" if outcome == "fail" else "🛑" if outcome == "rejected"
+                else "⏳") if i == len(beats) - 1 else "✓"
         lines.append(f"{mark} {ICONS.get(b['role'], '•')} *{b['title']}*  `+{b.get('t_rel', 0):.0f}s`")
     ctx = [f"⏱ {elapsed_s:.0f} s" if elapsed_s is not None else None,
            f"enclave: `{enclave}`" if enclave else None,

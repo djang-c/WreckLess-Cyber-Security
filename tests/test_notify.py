@@ -166,3 +166,47 @@ def test_swarm_final_title_gets_the_approve_buttons():
     assert 'title = "Fix branch ready (local, pending review)"' in inspect.getsource(swarm)
     assert notify.beat_outcome("✅ Fix branch ready (local, pending review): CVE-X#1") == "ok"
     assert notify.beat_outcome("✅ Fix branch ready (local, pending review) · ⚠️ CACHED: CVE-X#1") == "ok"
+
+
+# ---------- 24/7 remote review: every outcome tells the reviewer what happened ----------
+DIFF = ("diff --git a/victim/vector_sql.py b/victim/vector_sql.py\n--- a/victim/vector_sql.py\n"
+        "+++ b/victim/vector_sql.py\n@@ -1,3 +1,4 @@\n+import ast\n-        return eval(x)\n"
+        "+        return ast.literal_eval(x)\n"
+        "diff --git a/victim/new.py b/victim/new.py\nnew file mode 100644\n--- /dev/null\n"
+        "+++ b/victim/new.py\n@@ -0,0 +1 @@\n+x = 1\n")
+
+
+def test_diffstat_counts_files_and_lines():
+    s = notify.diffstat(DIFF)
+    assert s.startswith("2 files · +3 −1")
+    assert "victim/vector_sql.py (+2 −1)" in s and "victim/new.py (+1)" in s
+    assert notify.diffstat("") == "no changes"
+
+
+def test_patch_failed_body_names_failed_checks_and_log_tail():
+    logs = {"regression_test": "ok\n1 passed", "functional": "x" * 5000 + "\nFAILED test_round_trip",
+            "exploit": "[verdict] BLOCKED"}
+    body = notify.patch_failed_body("held-out regression: PASS · functional: FAIL · exploit blocked: YES",
+                                    ["functional"], logs, DIFF, "/runs/items/CVE-1-1", "llm")
+    assert "Failed: *functional*" in body
+    assert "FAILED test_round_trip" in body and "x" * 2000 not in body   # tail only
+    assert "2 files · +3 −1" in body and "ast.literal_eval" not in body  # summary, never the patch
+    assert "/runs/items/CVE-1-1" in body and "patch: llm" in body
+    assert len(body) <= notify.TEXT_MAX
+
+
+def test_rejected_body_and_header():
+    body = notify.rejected_body("eval in vector_sql", "oracle not reached", "repro_exploit.py",
+                                "null-victim", "Traceback ... ORACLE_MISS", "/runs/items/X-1")
+    assert "Reason: oracle not reached" in body and "ORACLE_MISS" in body and "Nothing was patched" in body
+    blocks = build_blocks([{"role": "red", "title": "🛑 Gate rejected: CVE-X#1", "body": body, "t_rel": 0}],
+                          cve="CVE-X")
+    assert "Not reproduced" in blocks[0]["text"]["text"] and not actions(blocks)
+    assert notify.beat_outcome("💥 Crashed: CVE-X#1") == "fail"
+
+
+def test_final_body_has_summary_and_short_excerpt_only():
+    big = DIFF + "".join(f"+line {i}\n" for i in range(2000))
+    body = notify.fixed_body("wreckless/fix-X-1", "a" * 40, "patch: llm", "all PASS", 12, big)
+    assert "2 files" in body and len(body) <= notify.TEXT_MAX
+    assert "+line 1999" not in body and "excerpt" in body

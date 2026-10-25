@@ -16,6 +16,7 @@ from wreckless.config import BENCHMARKS, INTEL_DB, Settings
 from wreckless.events import EventLog
 from wreckless.kb import IntelDB
 from wreckless.gitops import commit_all, git, init_victim, worktree
+from wreckless import notify
 from wreckless.notify import Notifier
 from wreckless.sandbox import Enclave, prune_orphan_sandboxes
 
@@ -154,7 +155,10 @@ class Swarm:
         try:
             return self._process(item_id, d, enclave)
         except Exception as e:  # we own this item: never leave it stuck in flight
-            self.queue.fail(item_id, "core", f"crashed: {type(e).__name__}: {e}"[:300])
+            why = f"crashed: {type(e).__name__}: {e}"[:300]
+            self.queue.fail(item_id, "core", why)
+            self._tell(item_id, enclave, "core", f"💥 Crashed: {item_id}",
+                       f"{why}\nThe item was failed; nothing was patched. Item dir: `{d}`")
             raise
         finally:
             enclave.close()
@@ -188,6 +192,11 @@ class Swarm:
         if not verdict or not verdict.passed:
             self.queue.advance(item_id, "rejected", "gate", reason=reason)
             ui.say("gate", f"{item_id} REJECTED — {reason}")
+            if item.source != "red-hunt" or os.environ.get("WRECKLESS_SLACK_REJECTS") == "all":
+                # hunt candidates are rejected often by design: counted in liveness, not posted
+                self._tell(item_id, enclave, "red", f"🛑 Gate rejected: {item_id}", notify.rejected_body(
+                    item.title, reason, script.name if script else None, verdict.control if verdict else None,
+                    verdict.result.output if verdict else "", str(d)))
             return "rejected"
 
         report = {
@@ -222,7 +231,11 @@ class Swarm:
         (d / "validation.json").write_text(json.dumps(v.logs, indent=2))
         if not diff or not v.ok:
             self.queue.advance(item_id, "patch_failed", "blue", summary=v.summary())
-            slack.send("blue", f"Patch failed validation: {item_id}", "Needs a human.")
+            failed = [] if not diff else ["patch rules"] if v.rejected else [
+                n for n, ok in (("held-out regression", v.regression), ("functional", v.functional),
+                                ("exploit blocked", v.exploit_blocked)) if ok is False]
+            slack.send("blue", f"Patch failed validation: {item_id}",
+                       notify.patch_failed_body(v.summary(), failed, v.logs, diff, str(d), patch_source))
             return "patch_failed"
 
         src_label = blue.CACHED_LABEL if patch_source == "fallback" else f"patch: {patch_source}"
@@ -239,12 +252,19 @@ class Swarm:
         if patch_source == "fallback":
             title += f" · ⚠️ {blue.CACHED_LABEL}"
         via = slack.send("blue", f"✅ {title}: {item_id}",
-                         f"Branch `{branch}` @ `{fix_commit[:10]}` · {src_label}\n"
-                         f"{v.summary()} · {elapsed:.0f}s\n```{diff[:1500]}```")
+                         notify.fixed_body(branch, fix_commit, src_label, v.summary(), elapsed, diff))
         self.queue.advance(item_id, "notified", "core", channel=via, elapsed_s=round(elapsed, 1))
         ui.notified(item_id, via)
         ui.say("core", f"{item_id} done in {elapsed:.1f}s → {d}")
         return "notified"
+
+    @staticmethod
+    def _tell(item_id: str, enclave: Enclave, role: str, title: str, body: str) -> None:
+        """One-off card for an outcome nobody watches live (24/7): never breaks the pipeline."""
+        try:
+            Notifier(run_id=item_id, enclave=enclave.backend).send(role, title, body)
+        except Exception as e:  # noqa: BLE001
+            ui.say("core", f"notify failed for {item_id}: {e}")
 
     # ---------- runtime ----------
     def run_hero(self, cve: str) -> str:
