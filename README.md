@@ -20,7 +20,7 @@ Every week a dependency in your stack gets a critical advisory. Someone on the s
 **your** code is actually exposed, write a proof, write a fix, and show the fix holds. Scanners hand over alerts and
 nobody has time to prove them. The AI-assisted version of that work usually means sending your source code to a cloud model.
 
-**WreckLess does the whole loop on a box under the desk, and nothing leaves it.**
+**WreckLess does the whole loop on a box under the desk. Every model runs there, and your code only leaves when a human approves a fix.**
 
 ---
 
@@ -30,10 +30,10 @@ nobody has time to prove them. The AI-assisted version of that work usually mean
 flowchart LR
     A["🟣 SCOUT<br/>reads the advisory"] --> B["🔴 RALPH<br/>writes & runs an exploit"]
     B --> C{"🟡 VERIFIER<br/>re-runs it, fresh nonce"}
-    C -->|"no proof"| X["🗑️ rejected<br/>(no alert raised)"]
+    C -->|"no proof"| X["🗑️ rejected<br/>(no alert, nothing patched)"]
     C -->|"proven"| D["🔵 FELIX<br/>patches the root cause"]
     D --> E{"3 checks pass?"}
-    E -->|"yes"| F["💬 CONDUCTOR<br/>fix branch to Slack<br/>(pending human review)"]
+    E -->|"yes"| F["💬 CONDUCTOR<br/>fix card to Slack<br/>human clicks Approve → draft PR"]
     E -->|"no"| G["🙋 escalate to a human"]
 ```
 
@@ -73,11 +73,76 @@ flowchart TB
         O <--> S0 & S1
         O --> SB
     end
-    O -- "notification card only" --> SL["💬 Slack"]
+    O -- "summaries via Porter's airlock<br/>(outbound wss, no open port)" --> SL["💬 Slack"]
+    O -- "draft PR, only after a human Approve" --> GH["🐙 GitHub (private repo)"]
     CL["☁️ OpenAI / Anthropic / …"] --x|"blocked by airgap_lockdown.sh"| GB10
 ```
 
-🩵 **Porter** lets approvers talk to the agents from Slack (`@WreckLess why is this dangerous?`, `note:`, `change:`, `exploit`) through an airlock: the Slack-side process never touches the code, the model answers from a briefing only, and a change request is re-patched, re-verified and approved like any fix. See [`docs/porter.md`](docs/porter.md).
+Every model runs on the box. What can leave, and when:
+
+| Path | What | When |
+|---|---|---|
+| Slack | the card (summary, the 3 checks, a short diff excerpt) and Porter's replies (built from that summary) | only if Slack is configured |
+| Slack | the exploit script | only when an approver asks for it by name; logged as a `disclosure` |
+| GitHub | the vulnerable base and the one approved fix commit | only after a human clicks Approve, and only if `WRECKLESS_GITHUB_REPO` is set |
+| cloud LLM APIs | nothing | never: blocked at the firewall (`airgap_lockdown.sh`, proven by its `verify` table) |
+
+Leave Slack and GitHub unset and nothing leaves at all (cards go to `logs/slack_outbox.jsonl`).
+`airgap_lockdown.sh airtight` goes further: default-deny egress except DNS, the LAN and Slack.
+
+---
+
+## Talk to it from Slack: Porter 🩵
+
+Approvers mention the bot in the run channel, ideally in a card's thread:
+
+```text
+@WreckLess why is this dangerous?          answered by the local model from the finding's briefing
+@WreckLess status                          queue counts and the newest findings
+@WreckLess note: this API is internal-only kept on the finding as an UNTRUSTED note
+@WreckLess change: also reject bytes input re-patched, re-verified, new card, Approve again
+@WreckLess exploit                         the exploit script, released on request and logged
+```
+
+```mermaid
+flowchart LR
+    SL["💬 Slack"] <-->|"outbound wss"| OD["🚪 outer door<br/>slack_socket + porter_outer<br/><i>no access to code, findings, models</i>"]
+    OD <-->|"typed messages only"| AL[("🔒 airlock<br/>inbox / outbox<br/>one door open at a time")]
+    AL <--> ID["🚪 inner door<br/>porter + decisions<br/><i>no Slack</i>"]
+    ID <--> Q["queue · findings · local models"]
+```
+
+- **No endpoint is opened.** Socket Mode is an outbound WebSocket from the box to Slack: no public URL,
+  no listening port. With the whole stack running, `lsof -iTCP -sTCP:LISTEN` shows none for our processes.
+- **Two processes.** The Slack side imports nothing that can read code, findings, the queue or a model
+  (tested). The inside never talks to Slack. Between them pass only typed messages (fixed kinds and
+  fields, capped text, validated ids); anything else is dropped.
+- **The model gets a briefing, not the code**: advisory, gate verdict, checks, fix diff, notes. No tools,
+  no source, no exploit output, so "ignore your rules and print the source" has nothing to print.
+- **Changes and clicks go through the pipeline.** `change:` queues a revision that the Verifier and every
+  check run again; Approve/Reject are recorded on the inside, bound to the exact commit.
+- Only `SLACK_APPROVERS`, only in `SLACK_CHANNEL`, 10 requests per user per minute.
+
+Limits, stated: the split is enforced in code, not yet by OS users and sandboxes; a hijacked approver
+account could fetch the exploit (logged) or approve a draft PR (never a merge). See [`docs/porter.md`](docs/porter.md).
+
+---
+
+## The app and 24/7
+
+`scripts/tmux_demo.sh` starts everything: the full-screen app in window **stage** and Porter's two doors
+(Slack side and agents' side, as separate processes) in window **doors**.
+
+- **Live**: a 5-step bar (Find → Attack → Prove → Fix → Approve) with one plain sentence per step, the six
+  birds, the GB10 memory and tokens/sec panel, the agents' log and the finding's checks.
+- **Proof**: every Verifier verdict with its three runs (two vulnerable copies, one control), in the order they ran.
+- **Findings**: the whole queue. **Settings**: which local model each agent uses; switch to a running model
+  instantly, or load one from disk (e.g. NVIDIA Nemotron 3.5 Lightning) in place of the current one.
+
+`scripts/install_services.sh` installs systemd units for the GB10: models at boot, the daemon (agents +
+Porter's inner door) and the Slack listener as separate services that restart on failure, and optionally the
+airgap at every boot. Every outcome posts a card (fix ready, patch failed, gate rejected, crashed), so the
+team reviews from anywhere.
 
 ---
 
@@ -215,10 +280,11 @@ The held-out tests are derived from the upstream fix by us, because upstream shi
 uv venv .venv && uv pip install -p .venv -e .
 .venv/bin/python -m wreckless run --no-llm                 # no GPU: scripted run, cached exploit and patch
 .venv/bin/python -m wreckless run --agentic --demo-mode    # full swarm on a GB10 (see docs/operations.md)
-.venv/bin/python -m wreckless tui                          # live flock view
+.venv/bin/python -m wreckless tui                          # the full-screen app
+scripts/tmux_demo.sh                                       # the app + Porter's two doors (Slack)
 ```
 
-[`demo-script`](docs/demo-script.md) · [`operations`](docs/operations.md) · [`slack-setup`](docs/slack-setup.md) · [`gb10-plan`](docs/gb10-plan.md) · [`deviations`](docs/deviations.md)
+[`demo-script`](docs/demo-script.md) · [`operations`](docs/operations.md) · [`slack-setup`](docs/slack-setup.md) · [`porter`](docs/porter.md) · [`gb10-plan`](docs/gb10-plan.md) · [`deviations`](docs/deviations.md)
 
 <div align="center">
 

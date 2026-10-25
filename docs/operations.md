@@ -42,7 +42,8 @@ unified-memory panel from `/proc/meminfo`.
 wreckless daemon                         # Purple every 10 min (--purple-interval 600), Red hunting, one worker
 wreckless daemon --no-hunt               # no background Red passes
 wreckless daemon --mode live             # Purple also polls the feeds (needs the network)
-wreckless daemon --slack-listener        # also serve the card's Approve/Reject buttons
+wreckless daemon --porter                # + Porter's inner door: records card clicks, answers @mentions
+wreckless daemon --slack-listener        # Slack side in this process too (starts the inner door as well)
 wreckless status                         # queue summary (same --home)
 wreckless replay --item CVE-2024-21513-1 # re-render an item from events.jsonl
 ```
@@ -59,8 +60,10 @@ Intel: `wreckless intel sync` (the one networked command) fills `runs/intel.db`
 ## 4. Slack
 
 Without `SLACK_BOT_TOKEN`+`SLACK_CHANNEL` (or `SLACK_WEBHOOK_URL`), cards go to
-`logs/slack_outbox.jsonl`. Buttons need the Socket Mode listener: `wreckless daemon --slack-listener`,
-or `python -m wreckless.slack_socket` as its own process next to a one-off `run`.
+`logs/slack_outbox.jsonl`. Buttons and @mentions need both of Porter's doors: the Slack side
+`python -m wreckless.slack_socket` (its own process; it never touches a finding) and the inside
+`wreckless daemon --porter` (or `python -m wreckless.porter` next to a one-off `run`), which records
+clicks and opens the draft PR. `scripts/tmux_demo.sh` starts both. Design: [`porter.md`](porter.md).
 Setup: [`slack-setup.md`](slack-setup.md). The listener retries with backoff and logs
 "enabled" only once connected.
 

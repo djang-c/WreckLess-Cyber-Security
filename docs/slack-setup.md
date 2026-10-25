@@ -21,7 +21,7 @@ Nothing leaves the box before the click; Reject never pushes; merging is a human
 ```yaml
 display_information:
   name: WreckLess
-  description: Local-first agentic security swarm (Purple/Red/Blue) on GB10
+  description: Local-first agentic security swarm (Scout, Ralph, Verifier, Felix, Porter) on GB10
 features:
   bot_user:
     display_name: WreckLess
@@ -82,14 +82,16 @@ makes no network calls and prints only token prefixes. Exit 0 = ready for the fi
 
 ## 5. Run
 
-`wreckless run` does not start the listener; only `wreckless daemon --slack-listener` does
-(as a thread that lives as long as the daemon). For a one-off `run`, keep the buttons
-clickable by running the listener as its own process:
+Clicks and @mentions need Porter's two doors running as two processes. Easiest:
+`scripts/tmux_demo.sh` (window "doors"). By hand:
 
 ```bash
-uv run --extra slack python -m wreckless.slack_socket     # blocking; Ctrl-C to stop
-uv run python -m wreckless run --cve CVE-2024-21513 --no-llm   # in another terminal
+uv run --extra slack python -m wreckless.slack_socket     # Slack side; blocking; Ctrl-C to stop
+uv run python -m wreckless.porter                         # inside: records clicks, answers, opens the PR
+uv run python -m wreckless run --cve CVE-2024-21513 --no-llm   # in a third terminal
 ```
+
+Until the inside runs, a clicked card says "recording it on the WreckLess host…".
 
 If `slack_bolt` is missing or either token is unset, `start_listener()` prints one
 `[slack-socket] disabled (...)` line and returns `None`; the pipeline is unaffected.

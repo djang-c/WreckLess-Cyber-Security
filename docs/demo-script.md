@@ -4,9 +4,10 @@ Run: `scripts/demo.sh [live|demo|scripted|replay]` (default `demo`). The script 
 (curl `/v1/models` on :8000/:8001/:8002, a recorded item that reached `notified`, Slack config),
 prints every `sudo` command and asks before running it.
 
-Optional stage layout: a short tmux pane on top running `wreckless view` (the flock, animated
-live from `events.jsonl`) above the main run, so the audience can follow who is working:
-`tmux split-window -vb -l 9 'uv run wreckless view'`.
+Stage layout: `scripts/tmux_demo.sh` opens the full-screen app (`wreckless tui`: 5-step bar with a
+plain sentence per step, the birds, GB10 panel, log, checks; ▶ Run the demo) in window "stage", and
+Porter's two doors in window "doors". `scripts/tmux_demo.sh scripted` keeps the older pane layout
+(flock strip, metrics, `demo.sh` run).
 
 Honesty rule for the presenter: say only what the screen shows. If the terminal says
 `fallback`, `outbox`, or `REPLAY of …`, say it out loud. A failed scoreboard is shown, not skipped.
@@ -54,6 +55,9 @@ picks the newest run of `$CVE` that reached `notified`, never another CVE's run.
    that exact commit and opens a draft PR on GitHub." Click Approve live; say "draft PR" only once
    the card shows its link (no link: GitHub unreachable or `WRECKLESS_GITHUB_REPO` unset; say the approval was recorded). If the terminal says
    `local outbox`, say Slack wasn't reachable and show `logs/slack_outbox.jsonl`.
+6. **Porter (optional, ~20 s, if time allows).** In the card's thread: `@WreckLess why is this
+   dangerous?` "The local model answers from a briefing of this finding only; the Slack side of the
+   airlock never touches the code, and no port is open on this box." Read the reply as written.
 
 ## Contingency ladder
 
