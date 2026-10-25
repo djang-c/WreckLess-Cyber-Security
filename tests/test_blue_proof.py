@@ -210,6 +210,13 @@ def test_str_cast_patch_fails_functional(tmp_path):
     assert v.functional is False and not v.ok
 
 
+def test_upstream_style_fix_passes_all_checks(tmp_path):
+    """Upstream 7b13292e deletes _try_eval and returns raw DB values. Option A (2026-10-25):
+    our checks must accept that design as well as literal_eval, not only our reference."""
+    v = _validate_patch(tmp_path, "CVE-2024-21513", FIX / "cve-2024-21513_upstream_style.patch")
+    assert v.ok, v.summary()
+
+
 # ---------- 6: labels ----------
 
 class _Recorder:
