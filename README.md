@@ -24,7 +24,7 @@
 [![Watch the demo](docs/assets/demo-thumbnail.png)](https://youtu.be/PLACEHOLDER)
 
 > **2:00 AM** — a prompt injection turns an enterprise AI assistant's SQL tool into remote code execution.
-> **2:04 AM** — WreckLess has reproduced it, patched it, verified the patch, and posted a draft PR to Slack.
+> **2:04 AM** — WreckLess has reproduced it, patched it, verified the patch, and posted a local fix branch (pending human review) to Slack.
 
 ---
 
@@ -35,14 +35,14 @@ flowchart LR
     A["🕵️ Purple<br/>reads the advisory"] --> B["🎩 Red<br/>writes & runs an exploit"]
     B -->|"vulnerability_report.json"| C["👷 Blue<br/>patches the code"]
     C --> D{"✅ Verified?"}
-    D -->|yes| E["💬 Slack:<br/>Draft PR Ready"]
+    D -->|yes| E["💬 Slack:<br/>Fix branch ready<br/>(local, pending review)"]
     D -->|no| F["🙋 Escalate<br/>to a human"]
 ```
 
 | | Role | Mascot | Job |
 |---|---|---|---|
 | 🟪 | **Purple** | Detective Fedora 🕵️ | Pulls threat intel (live feed or offline cache) and forms an attack hypothesis |
-| 🔴 | **Red** | Top Hat 🎩 | Writes `repro_exploit.py` and runs it in a sandbox until it **provably** works |
+| 🔴 | **Red** | Top Hat 🎩 | Writes `repro_exploit.py` and runs it behind a userland guard rail (OpenShell when installed) until it **provably** works |
 | 🔵 | **Blue** | Hard Hat 👷 | Patches the root cause, runs tests, and writes a runtime egress policy |
 
 <!-- PLACEHOLDER: mascot illustration sheet (3 characters side by side) -->
@@ -76,16 +76,16 @@ We report only findings with a working exploit, and we accept a patch only after
 
 ```mermaid
 flowchart TB
-    P["👷 Blue's patch"] --> R["🔒 Held-out regression test<br/><i>never shown to Blue</i>"]
+    P["👷 Blue's patch"] --> R["🔒 Held-out regression + static checks<br/><i>written by WreckLess, never shown to Blue</i>"]
     P --> X["🎩 Red's exploit re-run<br/><i>must now FAIL</i>"]
-    P --> F["🧪 App's own tests<br/><i>must still PASS</i>"]
+    P --> F["🧪 Victim replica's functional tests<br/><i>written by WreckLess, must still PASS</i>"]
     R & X & F --> OK["✅ PATCH_VALIDATED"]
 ```
 
-**Exploit oracle:** Red's script must make the *vulnerable code path itself* write a random nonce into a file inside the sandbox. A crash, a guess, or a printed "success" doesn't count.
+**Exploit oracle:** Red's script must make the *vulnerable code path itself* write a random nonce into a file inside the run directory. The orchestrator holds the nonce and checks the file itself; a crash, a guess, or a printed "success" doesn't count.
 
 > [!NOTE]
-> The upstream LangChain fix ([`7b13292`](https://github.com/langchain-ai/langchain/commit/7b13292e3544b2f5f2bfb8a27a062ea2b0c34561)) shipped **without** a regression test, so our held-out test is derived from the upstream diff. We also test that this oracle **fails on the unpatched code**; otherwise passing it would prove nothing.
+> The upstream LangChain fix ([`7b13292`](https://github.com/langchain-ai/langchain/commit/7b13292e3544b2f5f2bfb8a27a062ea2b0c34561)) shipped **without** a regression test, so our held-out tests are written by WreckLess, derived from the upstream diff (they are not upstream's or a maintainer's tests). They run from a pristine copy with `--noconftest` in their own rootdir, and Blue's patch is rejected if it touches `tests/`, `conftest.py`, pytest/packaging config or `sitecustomize.py`. We also test that this oracle **fails on the unpatched code**; otherwise passing it would prove nothing.
 
 ---
 
@@ -108,7 +108,7 @@ sequenceDiagram
     Py->>Py: eval(value)  💥 code execution
 ```
 
-**Blue's fix** (one line, plus the import):
+**Cached reference fix** (`benchmarks/CVE-2024-21513/known_good/fix.patch`; not AI-generated — used as the labelled demo fallback and as the comparison for Blue's own patch):
 
 ```diff
  def _try_eval(x: Any) -> Any:
@@ -128,7 +128,7 @@ Plain data such as `[0.12, 0.88]` still parses; code never runs.
 <!-- PLACEHOLDER: terminal screenshot with color-coded Purple/Red/Blue trace -->
 <img src="docs/assets/terminal-trace.png" alt="Color-coded terminal trace" width="90%">
 
-<!-- PLACEHOLDER: Slack card GIF updating from "Intrusion reproduced" → "Draft PR Ready" -->
+<!-- PLACEHOLDER: Slack card GIF updating from "Intrusion reproduced" → "Fix branch ready (local, pending review)" -->
 <img src="docs/assets/slack-cards.gif" alt="Slack card updating live" width="60%">
 
 ---
@@ -145,7 +145,7 @@ flowchart TB
             S1[":8001 Blue<br/>Qwen3-Coder-Next 80B-A3B · AWQ"]
             S2[":8002 Victim<br/>Qwen2.5-Coder-7B · AWQ"]
         end
-        subgraph SB["🔒 Sandbox"]
+        subgraph SB["🔒 Userland guard rail (OpenShell when installed)"]
             E["repro_exploit.py"]
             V["victim repo<br/>(git worktrees)"]
         end
@@ -248,9 +248,9 @@ runs/CVE-2024-21513-<timestamp>/
 | `wreckless/cli.py` | Orchestrator: Purple → Red → Blue → Slack |
 | `wreckless/agents/` | `purple.py` · `red.py` · `blue.py` (tool-calling agents) |
 | `wreckless/state.py` | JSON state machine |
-| `wreckless/sandbox.py` | Exploit sandbox (OpenShell adapter + fallback guard) |
+| `wreckless/sandbox.py` | Exploit enclave: userland guard rail (OpenShell when installed) |
 | `wreckless/llm.py` | Tool-calling loop against local vLLM |
-| `targets/victim_app/` | Vulnerable replica of `langchain_experimental.sql.vector_sql` @ 0.0.20 |
+| `targets/victim_app/` | Minimal replicas of the vulnerable LangChain functions (`vector_sql` @ 0.0.20, `pal_chain` @ aebdb1a) |
 | `benchmarks/CVE-*/` | Advisory, held-out regression test, reference exploit and patch |
 | `scripts/` | Model download, vLLM serving, airgap lockdown |
 | `wreckless-gb10-plan.md` | Deployment plan and memory math |
@@ -259,9 +259,11 @@ runs/CVE-2024-21513-<timestamp>/
 
 ## ⚠️ Honest limitations
 
-- **Sandbox:** the code is wired for OpenShell, but it isn't installed on this box yet. Until it is, exploits run behind a Python-level guard (blocks writes outside the run directory and non-loopback network) with scrubbed environment, resource limits, and a timeout. This host blocks the unprivileged user namespaces that `bwrap` needs, so the fallback is **not** kernel isolation.
-- **One CVE so far.** The pipeline is generic (`benchmarks/<CVE>/`), but only CVE-2024-21513 is packaged.
-- **`--demo-mode` fallbacks are labelled.** If the LLM misses and the cached exploit or patch is used, the report says `"source": "fallback"`.
+- **Userland guard rail, not a sandbox:** the code is wired for OpenShell, but it isn't installed on this box yet. Until it is, exploits run behind a Python-level guard (blocks writes outside the run directory and non-loopback network) with scrubbed environment, resource limits, and a timeout. This host blocks the unprivileged user namespaces that `bwrap` needs, so the fallback is **not** kernel isolation: `os.system`/subprocess children escape the Python audit hook.
+- **Two CVEs so far.** The pipeline is generic (`benchmarks/<CVE>/`); CVE-2024-21513 and CVE-2023-44467 are packaged.
+- **Held-out tests run in-process with the patched code.** Conftest/ini/plugin injection is blocked and pass/fail is read from exit code + junit, but deliberately adversarial victim code could still tamper with the pytest process. The static checks (`static_test.py`) never import victim code, so they cannot be tampered with that way.
+- **Reference fix gap (CVE-2023-44467):** the cached reference patch scores 3/4 on the non-gating hardening probes; `getattr_strings` (no dunder identifiers) still escapes it.
+- **`--demo-mode` fallbacks are labelled.** If the LLM misses and the cached exploit or patch is used, the report says `"source": "fallback"` and the terminal and Slack card say **CACHED REFERENCE PATCH — not AI-generated**.
 
 ---
 

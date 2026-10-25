@@ -65,19 +65,21 @@ def test_validation_fails_on_unpatched_victim(victim, cve):
     assert v.regression is False and v.functional and not v.exploit_blocked and not v.ok
 
 
-def test_hardening_probes_beat_upstream_style_fix(victim):
+def test_upstream_style_fix_fails_strengthened_regression(victim):
     src, enclave = victim
     report = {"cve": "CVE-2023-44467",
               "repro_script": str(BENCHMARKS / "CVE-2023-44467" / "known_good" / "repro_exploit.py")}
-    # upstream's one-word denylist fix: passes regression, fails the bypass probes
+    # upstream's one-word call-name denylist fix: blocks the reference exploit, but
+    # __import__ stays reachable via alias / __builtins__ (cf. CVE-2024-27444)
     p = src / "victim" / "pal_chain.py"
     p.write_text(p.read_text().replace('"eval"]', '"eval", "__import__"]'))
     v = blue.validate(src, enclave, report)
-    assert v.ok and v.hardening == "0/3"
-    # reference Blue patch: closes the bypasses too
+    assert v.exploit_blocked and v.regression is False and not v.ok and v.hardening == "0/4"
+    # reference Blue patch: passes the gate; known gap: getattr_strings probe stays open
     git(src, "checkout", "-q", "--", ".")
     git(src, "apply", str(BENCHMARKS / "CVE-2023-44467" / "known_good" / "fix.patch"))
-    assert blue.validate(src, enclave, report).hardening == "3/3"
+    v = blue.validate(src, enclave, report)
+    assert v.ok and v.hardening == "3/4"
 
 
 @pytest.mark.parametrize("code,needle", [

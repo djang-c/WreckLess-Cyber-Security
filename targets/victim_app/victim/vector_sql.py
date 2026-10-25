@@ -1,7 +1,8 @@
-"""Replica of langchain_experimental.sql.vector_sql @ 0.0.20 (CVE-2024-21513).
+"""Minimal replica of the vulnerable LangChain function
+(langchain_experimental.sql.vector_sql @ 0.0.20, CVE-2024-21513).
 
-The result-parsing path mirrors upstream byte-for-byte in behavior: every value
-returned by the database is passed through ``_try_eval`` -> ``eval``.
+Like upstream, every value returned by the database is passed through
+``_try_eval`` -> ``eval``. It is not a copy of the full upstream module.
 """
 from typing import Any, Dict, List, Union
 
