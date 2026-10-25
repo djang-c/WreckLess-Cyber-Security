@@ -1,4 +1,4 @@
-"""wreckless run | daemon | status | replay"""
+"""wreckless run | daemon | status | replay | metrics"""
 import argparse
 import json
 import sys
@@ -49,7 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--speed", type=float, default=1.0)
     rp.add_argument("--item")
 
+    m = sub.add_parser("metrics", help="GB10 memory + per-port tokens/sec from vLLM /metrics")
+    m.add_argument("--watch", type=float, metavar="SECONDS", help="refresh every N seconds")
+    m.add_argument("--json", action="store_true", help="one JSON line per sample (for dashboards)")
+
     a = ap.parse_args(argv)
+    if a.cmd == "metrics":
+        return _metrics(a.watch, a.json)
     if a.cmd == "replay":
         replay(a.events, a.speed, a.item)
         return 0
@@ -64,6 +70,29 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
     swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener)
     return 0
+
+
+def _metrics(watch: float | None, as_json: bool) -> int:
+    import dataclasses
+    import time
+    from wreckless.metrics import Monitor
+    mon = Monitor()
+    if watch and not as_json:
+        mon.sample()          # prime the counters so the first panel already has tokens/sec
+        time.sleep(min(watch, 2))
+    while True:
+        snap = mon.sample()
+        ports = [dataclasses.asdict(p) for p in snap.ports]
+        if as_json:
+            print(json.dumps({"t": snap.t, "mem_total_gb": snap.mem_total_gb,
+                              "mem_used_gb": snap.mem_used_gb, "ports": ports}), flush=True)
+        else:
+            if watch and ui.color_enabled():
+                print("\033[H\033[2J", end="")
+            ui.gb10_panel(snap.mem_total_gb, snap.mem_used_gb, ports, _record=False)
+        if not watch:
+            return 0 if any(p.up for p in snap.ports) else 1
+        time.sleep(watch)
 
 
 def _status(home: Path) -> int:

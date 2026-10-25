@@ -81,7 +81,7 @@ MASCOTS = {
 # Set by EventLog so terminal output can be replayed later: (role, kind, **data) -> None.
 SINK = None
 REPLAYABLE = {"say", "detail", "banner", "mascot", "intrusion", "diff", "scoreboard",
-              "patch_validated", "notified"}
+              "patch_validated", "notified", "gb10_panel"}
 
 
 def _emit(role: str, kind: str, **data) -> None:
@@ -279,6 +279,40 @@ def notified(item: str, channel: str, ts: float | None = None, _record: bool = T
     where = ("Slack" if channel.startswith("slack") else
              "local outbox logs/slack_outbox.jsonl (Slack not configured / unreachable)")
     say("core", f"✅ {item} fix-branch card (local, pending review) → {where} [{channel}]", ts=ts, _record=False)
+
+
+def _bar(frac: float, width: int) -> str:
+    n = max(0, min(width, round(frac * width)))
+    return "█" * n + "░" * (width - n)
+
+
+def gb10_panel(mem_total_gb: float, mem_used_gb: float, ports: list[dict], _record: bool = True) -> None:
+    """GB10 unified-memory + per-port throughput panel. ``ports`` are ``metrics.PortStats`` dicts;
+    a down port is shown as DOWN, tokens/sec as '—' until there are two samples."""
+    if _record:
+        _emit("core", "gb10_panel", mem_total_gb=mem_total_gb, mem_used_gb=mem_used_gb, ports=ports)
+    inner = 62
+    used = mem_used_gb / mem_total_gb if mem_total_gb else 0
+    up = [p for p in ports if p.get("up")]
+
+    def row(text: str) -> None:  # pad by visible width so colour codes don't skew the border
+        _out(f"   │ {text}{' ' * max(0, inner - 1 - len(strip_ansi(text)))}│")
+
+    with _LOCK:
+        _out(f"   ┌{' GB10 · unified memory · loopback only '.center(inner, '─')}┐")
+        row(f"mem {_bar(used, 30)} {mem_used_gb:5.1f}/{mem_total_gb:.0f} GB {used:4.0%}")
+        for p in ports:
+            name = f"{p['role']} :{p['port']}"
+            if not p.get("up"):
+                row(f"{name:<17} {_c(RED, 'DOWN')} {p.get('error') or ''}")
+                continue
+            share = f"{p['mem_util'] * mem_total_gb:3.0f} GB" if p.get("mem_util") else "  ? GB"
+            tok = f"{p['tok_s']:6.1f} tok/s" if p.get("tok_s") is not None else "     — tok/s"
+            kv = f"kv {p['kv_usage']:4.0%}" if p.get("kv_usage") is not None else "kv    ?"
+            row(f"{name:<17} {share} {_c(GREEN, tok)}  {kv}  "
+                f"{p.get('running', 0):.0f} run {p.get('waiting', 0):.0f} wait")
+        total_tok = sum(p.get("tok_s") or 0 for p in up)
+        _out(f"   └{'─' * inner}┘  {len(up)}/{len(ports)} up · {total_tok:.1f} tok/s total")
 
 
 def replay_tag(source: str, speed: float) -> None:
