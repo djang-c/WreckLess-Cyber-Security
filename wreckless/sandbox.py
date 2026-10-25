@@ -406,6 +406,16 @@ GUARD = textwrap.dedent('''
 
     _install()
     del _install
+
+    import sys as _sys
+    if _sys.platform == "darwin":
+        # Parity with the Linux enclave (GB10): macOS defaults multiprocessing to spawn, which
+        # re-imports the exploit's __main__ and dies while bootstrapping. LangChain's PythonREPL
+        # (PALChain, CVE-2023-44467) runs code in a Process, so on spawn it only ever timed out.
+        import multiprocessing as _mp
+        _mp.set_start_method("fork", force=True)
+        del _mp
+    del _sys
 ''')
 
 

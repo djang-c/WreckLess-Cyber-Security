@@ -216,3 +216,15 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
     time.sleep(0.5)
     left = subprocess.run(["pgrep", "-f", f"sleep {tag}"], capture_output=True, text=True).stdout
     assert not left.strip()
+
+
+def test_payload_multiprocessing_works_like_linux(box):
+    """Regression 2026-10-25: on macOS (spawn) a Process in the payload died while bootstrapping,
+    so the real-LangChain PALChain exploit (PythonREPL runs code in a Process) only timed out."""
+    root, victim, enclave = box
+    r = enclave.run([sys.executable, "-c",
+                     "import multiprocessing as mp\n"
+                     "def f(q): q.put(7)\n"
+                     "q = mp.Queue(); p = mp.Process(target=f, args=(q,)); p.start(); p.join(20)\n"
+                     "print('got', q.get(timeout=5))"], timeout=60)
+    assert r.returncode == 0 and not r.violation and "got 7" in r.output, r.output
