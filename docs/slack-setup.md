@@ -156,3 +156,4 @@ Only `SLACK_APPROVERS` in `SLACK_CHANNEL` are heard; 10 requests per user per mi
 Existing app: add the `app_mentions:read` scope and the `app_mention` bot event (manifest above),
 then **reinstall the app** to the workspace. Run the two doors as two processes:
 `python -m wreckless.slack_socket` (outer) and `wreckless daemon --porter` (inner); see `docs/porter.md`.
+Or everything at once: `scripts/tmux_demo.sh` (the app in window "stage", both doors in window "doors").

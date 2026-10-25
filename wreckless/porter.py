@@ -236,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m wreckless.porter")
     ap.add_argument("--home", type=Path, default=RUNS / "swarm")
     a = ap.parse_args(argv)
+    from wreckless.config import load_env
+    load_env()   # WRECKLESS_GITHUB_REPO etc.: an approval opens the draft PR from here
     ev = EventLog(a.home / "events.jsonl").attach()
     inner = Inner(a.home, queue=CandidateQueue(a.home / "queue.db", ev))
     ui.say("porter", f"inner door open on {a.home} (airlock {inner.lock.root})")
