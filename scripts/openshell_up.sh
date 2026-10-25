@@ -8,7 +8,7 @@ grep -q OPENSHELL_COMPUTE_DRIVER ~/.config/openshell/gateway.env 2>/dev/null \
   || echo "OPENSHELL_COMPUTE_DRIVER=docker" >> ~/.config/openshell/gateway.env
 
 # docker group may be missing from this login session if it was added after login
-if id -nG | grep -qw docker; then D() { "$@"; }; else D() { sg docker -c "$*"; }; fi
+if id -nG | grep -qw docker; then D() { "$@"; }; else D() { sg docker -c "$(printf '%q ' "$@")"; }; fi
 
 D docker image inspect wreckless-sandbox:py312 >/dev/null 2>&1 \
   || D docker build -q -t wreckless-sandbox:py312 sandbox/
@@ -21,7 +21,10 @@ if openshell status 2>/dev/null | grep -q Connected; then
 fi
 
 # The systemd user manager only has the docker group if it started after the group was added.
-if grep -q "$(getent group docker | cut -d: -f3)" <(grep Groups /proc/"$(pgrep -u "$USER" -x systemd | head -1)"/status); then
+# exact gid match (999 must not match 1999); no systemd user manager at all → the sg path
+gid=$(getent group docker | cut -d: -f3)
+spid=$(pgrep -u "$USER" -x systemd | head -1 || true)
+if [[ -n $gid && -n $spid ]] && awk -v g="$gid" '$1 == "Groups:" {for (i = 2; i <= NF; i++) if ($i == g) f = 1} END {exit !f}' "/proc/$spid/status"; then
   systemctl --user restart openshell-gateway
 else
   echo "systemd user manager lacks the docker group (log out/in or reboot to fix); starting gateway via sg"

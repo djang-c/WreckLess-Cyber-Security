@@ -56,7 +56,7 @@ One vLLM server per model, each on its own port. Purple and Red share the 30B se
 
 | Port | Role(s) | Model | Weights (approx) | Start `--gpu-memory-utilization` |
 |---|---|---|---|---|
-| 8001 | Blue (defender) | 80B-A3B 4-bit | ~42 GB | 0.40 |
+| 8001 | Blue (defender) | 80B-A3B 4-bit | ~45 GB | 0.45 |
 | 8000 | Purple + Red | Qwen3-Coder-30B-A3B AWQ | ~16 GB | 0.20 |
 | 8002 | Victim target | Qwen2.5-Coder-7B AWQ | ~5 GB | 0.08 |
 
@@ -64,28 +64,29 @@ One vLLM server per model, each on its own port. Purple and Red share the 30B se
 
 **Rules for making three instances coexist in one unified pool:**
 
-- `--gpu-memory-utilization` is a fraction of *total* device memory, and each instance reserves its own slice. The three fractions plus the OS must stay under 1.0 — the numbers above sum to 0.68, leaving generous headroom at N=1 concurrency. Tune up only if you need more KV.
+- `--gpu-memory-utilization` is a fraction of *total* device memory, and each instance reserves its own slice. The three fractions plus the OS must stay under 1.0 — the numbers above sum to 0.73, leaving generous headroom at N=1 concurrency. Tune up only if you need more KV.
 - **Launch the biggest model (80B, port 8001) first**, then the 30B, then the 7B. The last instance to start sees the least free memory.
 - Verify free memory between launches with `nvidia-smi` (or `tegrastats`) before starting the next instance.
 - Cap context hard: `--max-model-len 16384`, `--max-num-seqs 4`, `--kv-cache-dtype fp8`. You don't need 256K context for this demo.
 - **Continuous Red keeps port 8000 busy.** Rate-limit it during the hero beat so Blue (8001) isn't starved of the shared 273 GB/s bandwidth.
 
-**Launch command (per instance):**
+**Launch:** `scripts/serve_models.sh` (biggest first; models, ports, names, utils and tool parsers
+come from `scripts/models.tsv`). What it runs per instance, as built (it supersedes the original draft):
 
 ```bash
-# Port 8001 — Blue (start this one FIRST)
-vllm serve <blue-80b-a3b-repo> \
-  --host 0.0.0.0 --port 8001 \
-  --quantization awq_marlin \
-  --gpu-memory-utilization 0.40 \
+# Port 8001 — Blue (started FIRST)
+vllm serve models/Qwen3-Coder-Next-AWQ-4bit \
+  --served-model-name blue --host 127.0.0.1 --port 8001 \
+  --gpu-memory-utilization 0.45 \
   --max-model-len 16384 --max-num-seqs 4 \
   --kv-cache-dtype fp8 \
-  --enable-expert-parallel \
-  --tool-call-parser qwen3_coder
-  # add --enforce-eager if CUDA graphs misbehave on sm_121
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder
+  # VLLM_EXTRA=--enforce-eager if CUDA graphs misbehave on sm_121
 ```
 
-Repeat for port 8000 (30B, util 0.20) and port 8002 (7B, util 0.08 — drop `--enable-expert-parallel`, the 7B victim is dense).
+Loopback only (`127.0.0.1`): inference never leaves the box. No `--quantization` flag: the cyankiwi
+repos are compressed-tensors (pack-quantized) and vLLM auto-selects Marlin kernels; forcing
+`awq_marlin` breaks them. 0.45 rather than 0.40 because the weights are 45 GiB on disk.
 
 ### Fallback: collapse to 2 ports
 
@@ -108,7 +109,7 @@ If the 80B won't stabilize on real hardware in time, degrade — don't crash:
 
 - aarch64 + `sm_121a` Docker image only — x86 images won't run.
 - vLLM build whose `ptxas` recognizes `sm_121a` (container CUDA/ptxas 12.9+; Triton's bundled 12.8 does not). Use the official vLLM DGX Spark image or a pinned community one (e.g. `vllm-gb10`).
-- AWQ-INT4 weights + Marlin backend (`--quantization awq_marlin`).
+- 4-bit weights (compressed-tensors) on Marlin kernels, auto-selected; do not pass `--quantization awq_marlin`.
 
 ---
 
@@ -136,6 +137,8 @@ Balanced: A carries the front-loaded infra risk; B carries the two heaviest logi
 ---
 
 ## Developing on MacBooks
+
+> Historical: the pre-hackathon plan. The build runs on the GB10 itself (see `docs/operations.md`).
 
 MacBooks are Apple Silicon (arm64) but have **no NVIDIA GPU and no CUDA**, so the vLLM / sm_121 / Marlin path can't run or be tested on a Mac.
 

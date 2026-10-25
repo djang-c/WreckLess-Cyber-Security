@@ -3,7 +3,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# benchmarks/, targets/ and runs/ live in the checkout; a non-editable install must point here
+ROOT = Path(os.environ.get("WRECKLESS_ROOT") or Path(__file__).resolve().parent.parent)
 BENCHMARKS = ROOT / "benchmarks"
 TARGETS = ROOT / "targets"
 RUNS = ROOT / "runs"

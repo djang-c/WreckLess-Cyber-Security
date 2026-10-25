@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Pull all swarm models into ./models (victim + red first: smallest, needed earliest)
-set -u
+# Pull every model in scripts/models.tsv into ./models at its pinned revision.
+# Exits non-zero (and says which) if any download failed; re-running resumes.
+# Needs the `hf` CLI: pip install -e '.[models]'
+set -euo pipefail
 cd "$(dirname "$0")/.."
 export HF_XET_HIGH_PERFORMANCE=1
-HF=.venv/bin/hf
-for repo in \
-  Qwen/Qwen2.5-Coder-7B-Instruct-AWQ \
-  cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit \
-  cyankiwi/Qwen3-Coder-Next-AWQ-4bit \
-  Qwen/Qwen2.5-Coder-32B-Instruct-AWQ \
-  RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8 ; do
-  echo "[$(date +%T)] >>> $repo"
-  $HF download "$repo" --local-dir "models/${repo#*/}" || echo "FAILED $repo"
-done
+HF=${HF:-.venv/bin/hf}
+failed=()
+while read -r role port names util parser repo rev; do
+  [[ -z $role || $role == \#* ]] && continue
+  echo "[$(date +%T)] >>> $repo @ $rev"
+  if ! "$HF" download "$repo" --revision "$rev" --local-dir "models/${repo#*/}"; then
+    echo "FAILED $repo"; failed+=("$repo")
+  fi
+done < scripts/models.tsv
+if (( ${#failed[@]} )); then
+  echo "[$(date +%T)] ${#failed[@]} FAILED: ${failed[*]}"; exit 1
+fi
 echo "[$(date +%T)] ALL DONE"
