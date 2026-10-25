@@ -10,12 +10,25 @@
 #   verify    PASS/FAIL table, exits non-zero on any FAIL (the on-stage proof)
 #   dry-run   print the iptables/ip6tables commands `on` (or `airtight`) would run
 #
-# Every rule lives in one chain (WRECKLESS_AIRGAP) in iptables and ip6tables, entered
-# by a single jump at the top of OUTPUT. `on` creates-or-flushes the chain and only
-# inserts the jump if missing, so running it twice yields identical rules.
+#   env       AIRTIGHT_LAN=0  airtight without the RFC1918/ULA allow (closes the LAN-proxy hole)
+#
+# Every rule lives in one chain (WRECKLESS_AIRGAP) in iptables and ip6tables, entered by a
+# single jump at the top of OUTPUT (and DOCKER-USER, for container egress). `on` builds a
+# fresh chain under a temporary name, hooks it in at position 1, retires the old chain, then
+# renames the new one: there is no moment without blocking, and re-running yields identical
+# rules. It FAILS CLOSED: every domain is resolved before anything changes; if one does not
+# resolve, the new chain still gets everything that did resolve PLUS every address the old
+# chain blocked, and `on` exits 1. If ip6tables is unusable on a host with a global IPv6
+# address, nothing is touched and `on` exits 1.
+#
+# Not covered by a block-list: an HTTP(S) proxy. With HTTPS_PROXY pointing at a LAN host, the
+# connection goes to the proxy (allowed: RFC1918 in airtight, anything in `on`) and the proxy
+# reaches the API. Unset proxies on the box, or use `airtight` with AIRTIGHT_LAN=0. `verify`
+# probes through any proxy set in its environment, so such a bypass shows up as FAIL there.
 # Linux only (iptables, getent). Do not run on a dev Mac.
 set -euo pipefail
 CHAIN=WRECKLESS_AIRGAP
+NEW="${CHAIN}_$$"   # build name, renamed to $CHAIN once hooked in (iptables names <= 28 chars)
 DOMAINS=(api.openai.com api.anthropic.com generativelanguage.googleapis.com
          aiplatform.googleapis.com api.mistral.ai api.cohere.com api.together.xyz
          api.groq.com openrouter.ai api.x.ai api.deepseek.com)
@@ -77,80 +90,176 @@ resolve() {
 # DOCKER-USER chain is the supported hook for that; jump into our chain there too.
 HOOKS=(OUTPUT DOCKER-USER)
 
-# reset_chain <ipt>: create the chain or flush it, and make sure exactly one jump exists
-reset_chain() {
-  local ipt=$1 hook
+has_global_v6() {  # a non-loopback global IPv6 address AND a default route to use it
+  [[ -r /proc/net/if_inet6 ]] && awk '$4 == "00" && $6 != "lo" {f=1} END {exit !f}' /proc/net/if_inet6 &&
+    [[ -n $(ip -6 route show default 2>/dev/null) ]]
+}
+
+docker_present() { command -v docker >/dev/null 2>&1 || [[ -S /var/run/docker.sock ]]; }
+
+# Docker creates DOCKER-USER (and FORWARD -> DOCKER-USER) when its daemon starts and keeps an
+# existing one, so creating it ourselves means containers started AFTER `on` are covered too.
+ensure_docker_user() {
+  local ipt=$1
+  docker_present || return 0
   if [[ $DRY_RUN -eq 1 ]]; then
-    echo "+ $ipt -N $CHAIN 2>/dev/null || $ipt -F $CHAIN"
-    for hook in "${HOOKS[@]}"; do
-      echo "+ $ipt -C $hook -j $CHAIN 2>/dev/null || $ipt -I $hook 1 -j $CHAIN  # if $hook exists"
-    done
+    echo "+ $ipt -N DOCKER-USER 2>/dev/null; $ipt -C FORWARD -j DOCKER-USER || $ipt -I FORWARD 1 -j DOCKER-USER"
     return 0
   fi
-  "$ipt" -N "$CHAIN" 2>/dev/null || "$ipt" -F "$CHAIN"
+  "$ipt" -S DOCKER-USER >/dev/null 2>&1 || "$ipt" -N DOCKER-USER
+  "$ipt" -C FORWARD -j DOCKER-USER 2>/dev/null || "$ipt" -I FORWARD 1 -j DOCKER-USER
+}
+
+# our_chains <ipt>: the live chain plus any build chain an interrupted run left behind
+our_chains() {
+  "$1" -S 2>/dev/null | awk -v c="$CHAIN" '$1 == "-N" && ($2 == c || $2 ~ ("^" c "_[0-9]+$")) {print $2}'
+}
+
+# drop_chain <ipt> <chain>: unhook from every hook, flush, delete
+drop_chain() {
+  local ipt=$1 c=$2 hook
   for hook in "${HOOKS[@]}"; do
-    "$ipt" -S "$hook" >/dev/null 2>&1 || continue   # DOCKER-USER only exists with Docker
-    "$ipt" -C "$hook" -j "$CHAIN" 2>/dev/null || "$ipt" -I "$hook" 1 -j "$CHAIN"
+    while "$ipt" -D "$hook" -j "$c" 2>/dev/null; do :; done
+  done
+  "$ipt" -F "$c" 2>/dev/null || true
+  "$ipt" -X "$c" 2>/dev/null || true
+}
+
+# old_rejects <ipt>: destinations the installed chain(s) REJECT (fail-closed carry-over)
+old_rejects() {
+  local c
+  for c in $(our_chains "$1"); do
+    "$1" -S "$c" 2>/dev/null | awk '/ -j REJECT/ {for (i = 1; i < NF; i++) if ($i == "-d") print $(i+1)}'
+  done | sed -E 's#/(32|128)$##' | sort -u
+}
+
+declare -A RES4=() RES6=()
+UNRESOLVED=()
+# resolve_all: resolve every blocked domain up front, before any rule changes
+resolve_all() {
+  local d v6=0
+  if has_global_v6; then v6=1; fi
+  for d in "${DOMAINS[@]}"; do
+    RES4[$d]=$(resolve "$d" 4 | tr '\n' ' ')
+    RES6[$d]=$(resolve "$d" 6 | tr '\n' ' ')
+    if [[ -z ${RES4[$d]// /} ]]; then
+      UNRESOLVED+=("$d"); red "  ! $d did not resolve (A): NOT blocked by IP"
+    elif [[ $v6 -eq 1 && -z ${RES6[$d]// /} ]]; then
+      yellow "  ! $d has no AAAA record: not reachable by name over IPv6, nothing to block there"
+    fi
   done
 }
 
 # block_rules <ipt> <4|6>: REJECT (fast fail, no timeout) every LLM address
 block_rules() {
-  local ipt=$1 fam=$2 d ip
+  local ipt=$1 fam=$2 d ip ips
   local -a statics seen=()
   if [[ $fam == 4 ]]; then statics=("${STATIC_V4[@]}"); else statics=("${STATIC_V6[@]}"); fi
   for ip in "${statics[@]}"; do
-    run "$ipt" -A "$CHAIN" -d "$ip" -p tcp -j REJECT --reject-with tcp-reset
-    run "$ipt" -A "$CHAIN" -d "$ip" -j REJECT
+    seen+=("$ip")
+    run "$ipt" -A "$NEW" -d "$ip" -p tcp -j REJECT --reject-with tcp-reset
+    run "$ipt" -A "$NEW" -d "$ip" -j REJECT
     red "  ✗ BLOCKED anthropic published range ($ip)"
   done
   for d in "${DOMAINS[@]}"; do
-    local ips; ips=$(resolve "$d" "$fam")
-    [[ -n $ips || $fam == 6 ]] || yellow "  ! $d did not resolve: NOT blocked by IP (check DNS)"
+    if [[ $fam == 4 ]]; then ips=${RES4[$d]}; else ips=${RES6[$d]}; fi
     for ip in $ips; do
-      [[ " ${seen[*]:-} " == *" $ip "* ]] && continue   # dedupe shared CDN IPs
+      [[ " ${seen[*]} " == *" $ip "* ]] && continue   # dedupe shared CDN IPs
       seen+=("$ip")
-      run "$ipt" -A "$CHAIN" -d "$ip" -p tcp -j REJECT --reject-with tcp-reset
-      run "$ipt" -A "$CHAIN" -d "$ip" -j REJECT
+      run "$ipt" -A "$NEW" -d "$ip" -p tcp -j REJECT --reject-with tcp-reset
+      run "$ipt" -A "$NEW" -d "$ip" -j REJECT
       red "  ✗ BLOCKED $d ($ip)"
     done
   done
+  # fail closed: something did not resolve, so never block less than the old chain did
+  if [[ ${#UNRESOLVED[@]} -gt 0 && $DRY_RUN -eq 0 ]]; then
+    for ip in $(old_rejects "$ipt"); do
+      [[ " ${seen[*]} " == *" $ip "* ]] && continue
+      seen+=("$ip")
+      run "$ipt" -A "$NEW" -d "$ip" -p tcp -j REJECT --reject-with tcp-reset
+      run "$ipt" -A "$NEW" -d "$ip" -j REJECT
+      red "  ✗ BLOCKED (kept from previous chain) $ip"
+    done
+  fi
 }
 
 # allow_rules <ipt> <4|6>: airtight allow-list + final default deny
 allow_rules() {
-  local ipt=$1 fam=$2 h ip net
+  local ipt=$1 fam=$2 h ip ips net
   local -a nets
   if [[ $fam == 4 ]]; then nets=("${LOCAL_V4[@]}"); else nets=("${LOCAL_V6[@]}"); fi
-  run "$ipt" -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  run "$ipt" -A "$NEW" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   # IPv6 neighbour discovery / PMTU rides on ICMPv6; denying it breaks v6 entirely.
-  [[ $fam == 6 ]] && run "$ipt" -A "$CHAIN" -p ipv6-icmp -j ACCEPT
-  for net in "${nets[@]}"; do run "$ipt" -A "$CHAIN" -d "$net" -j ACCEPT; done
-  run "$ipt" -A "$CHAIN" -p udp --dport 53 -j ACCEPT
-  run "$ipt" -A "$CHAIN" -p tcp --dport 53 -j ACCEPT
+  if [[ $fam == 6 ]]; then run "$ipt" -A "$NEW" -p ipv6-icmp -j ACCEPT; fi
+  if [[ ${AIRTIGHT_LAN:-1} == 1 ]]; then
+    # NOTE: this also allows any HTTP(S) proxy on the LAN, which can relay to the cloud APIs.
+    for net in "${nets[@]}"; do run "$ipt" -A "$NEW" -d "$net" -j ACCEPT; done
+  else
+    yellow "  ! AIRTIGHT_LAN=0: LAN (RFC1918/ULA) egress denied except DNS"
+  fi
+  run "$ipt" -A "$NEW" -p udp --dport 53 -j ACCEPT
+  run "$ipt" -A "$NEW" -p tcp --dport 53 -j ACCEPT
   for h in "${SLACK_HOSTS[@]}"; do
-    for ip in $(resolve "$h" "$fam"); do
-      run "$ipt" -A "$CHAIN" -d "$ip" -p tcp --dport 443 -j ACCEPT
+    ips=$(resolve "$h" "$fam")
+    [[ -n $ips || $fam == 6 ]] || yellow "  ! $h did not resolve: Slack may be blocked (fails closed)"
+    for ip in $ips; do
+      run "$ipt" -A "$NEW" -d "$ip" -p tcp --dport 443 -j ACCEPT
       green "  ✓ ALLOWED $h ($ip)"
     done
   done
-  run "$ipt" -A "$CHAIN" -j REJECT
+  run "$ipt" -A "$NEW" -j REJECT
+}
+
+# swap_in <ipt>: hook the fully built $NEW in first, then retire the old chain(s) and rename.
+# Blocking never lapses: the old chain stays hooked until the new one already is.
+swap_in() {
+  local ipt=$1 hook c
+  ensure_docker_user "$ipt"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    for hook in "${HOOKS[@]}"; do echo "+ $ipt -I $hook 1 -j $NEW  # if $hook exists"; done
+    echo "+ (unhook, flush and delete the old $CHAIN)"
+    echo "+ $ipt -E $NEW $CHAIN"
+    return 0
+  fi
+  for hook in "${HOOKS[@]}"; do
+    "$ipt" -S "$hook" >/dev/null 2>&1 || continue   # DOCKER-USER only exists with Docker
+    "$ipt" -I "$hook" 1 -j "$NEW"
+  done
+  for c in $(our_chains "$ipt"); do
+    [[ $c == "$NEW" ]] || drop_chain "$ipt" "$c"
+  done
+  "$ipt" -E "$NEW" "$CHAIN" || { red "  ! could not rename $NEW to $CHAIN (rules ARE active under $NEW)"; return 1; }
 }
 
 # apply <airtight 0|1>
 apply() {
-  local tight=$1 ipt fam
+  local tight=$1 ipt fam rc=0
+  if [[ -z $IPT6 ]]; then
+    if has_global_v6; then
+      red "  ✗ ip6tables unusable but this host has a global IPv6 address: IPv6 egress would be"
+      red "    unfiltered. Nothing changed. Fix ip6tables (or set IP6TABLES=) and re-run."
+      exit 1
+    fi
+    yellow "  ! ip6tables unavailable; no global IPv6 address here, so IPv4-only filtering"
+  fi
+  resolve_all
   for fam in 4 6; do
     if [[ $fam == 4 ]]; then ipt=$IPT4; else ipt=$IPT6; fi
-    if [[ -z $ipt ]]; then
-      yellow "  ! ip6tables unavailable: IPv6 egress NOT filtered"; continue
-    fi
-    reset_chain "$ipt"
-    run "$ipt" -A "$CHAIN" -o lo -j ACCEPT        # local vLLM :8000-8002 always first
+    [[ -n $ipt ]] || continue
+    if [[ $DRY_RUN -eq 1 ]]; then echo "+ $ipt -N $NEW"; else "$ipt" -N "$NEW"; fi
+    run "$ipt" -A "$NEW" -o lo -j ACCEPT        # local vLLM :8000-8002 always first
     block_rules "$ipt" "$fam"
-    [[ $tight -eq 1 ]] && allow_rules "$ipt" "$fam"
+    if [[ $tight -eq 1 ]]; then allow_rules "$ipt" "$fam"; fi
+    swap_in "$ipt" || rc=1
   done
+  if [[ ${#UNRESOLVED[@]} -gt 0 ]]; then
+    red "  ✗ FAIL CLOSED: could not resolve ${UNRESOLVED[*]}."
+    red "    Applied every address that did resolve and kept every address previously blocked."
+    red "    Fix DNS and re-run; do not claim the airgap until \`verify\` passes."
+    exit 1
+  fi
   green "  ✓ loopback / local vLLM :8000-8002 and Slack remain reachable (IPv4 + IPv6)"
+  return "$rc"
 }
 
 on() { apply 0; }
@@ -162,14 +271,10 @@ airtight() {
 }
 
 off() {
-  local ipt hook
+  local ipt c
   for ipt in "$IPT4" "$IPT6"; do
     [[ -n $ipt ]] || continue
-    for hook in "${HOOKS[@]}"; do
-      while "$ipt" -D "$hook" -j "$CHAIN" 2>/dev/null; do :; done
-    done
-    "$ipt" -F "$CHAIN" 2>/dev/null || true
-    "$ipt" -X "$CHAIN" 2>/dev/null || true
+    for c in $(our_chains "$ipt"); do drop_chain "$ipt" "$c"; done
   done
   echo "airgap rules removed"
 }
@@ -188,11 +293,6 @@ status() {
 
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo $(( $(date +%s) * 1000 )); }
 
-has_global_v6() {  # a non-loopback global IPv6 address AND a default route to use it
-  [[ -r /proc/net/if_inet6 ]] && awk '$4 == "00" && $6 != "lo" {f=1} END {exit !f}' /proc/net/if_inet6 &&
-    [[ -n $(ip -6 route show default 2>/dev/null) ]]
-}
-
 # reject_hits <4|6>: packets our chain's REJECT rules have matched (root only; "" if unknown)
 reject_hits() {
   local ipt
@@ -201,14 +301,39 @@ reject_hits() {
   "$ipt" -L "$CHAIN" -v -x -n 2>/dev/null | awk '$3 == "REJECT" {s += $1} END {if (NR) print s + 0}'
 }
 
+# uncovered <4|6> <ip>...: print the IPs no REJECT rule in our chain covers (root only)
+uncovered() {
+  local fam=$1 ipt dests ip; shift
+  if [[ $fam == 4 ]]; then ipt=$IPT4; else ipt=$IPT6; fi
+  dests=$("$ipt" -S "$CHAIN" 2>/dev/null | awk '/ -j REJECT/ {for (i = 1; i < NF; i++) if ($i == "-d") print $(i+1)}')
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$dests" "$@" <<'PY'
+import ipaddress, sys
+nets = [ipaddress.ip_network(n, strict=False) for n in sys.argv[1].split()]
+for a in sys.argv[2:]:
+    ip = ipaddress.ip_address(a)
+    if not any(ip.version == n.version and ip in n for n in nets):
+        print(a)
+PY
+  else
+    for ip in "$@"; do grep -qxF -e "$ip/32" -e "$ip/128" <<<"$dests" || echo "$ip"; done
+  fi
+}
+
 verify() {
-  local fails=0 rc t0 dt code body host fam err h0 h1
+  local fails=0 rc t0 dt code body host fam err h0 h1 ipt ips miss
   local -a rows=()
+  local v6=0
+  if has_global_v6; then v6=1; fi
   [[ $EUID -eq 0 ]] && init_backends
-  for host in api.openai.com api.anthropic.com; do
+  for host in "${DOMAINS[@]}"; do
     for fam in 4 6; do
-      if [[ $fam == 6 ]] && ! has_global_v6; then
+      if [[ $fam == 6 && $v6 -eq 0 ]]; then
         rows+=("$host (v6) blocked|SKIP|no global IPv6 address on this host"); continue
+      fi
+      ips=$(resolve "$host" "$fam" | tr '\n' ' ')
+      if [[ $fam == 6 && -z ${ips// /} ]]; then
+        rows+=("$host (v6) blocked|SKIP|no AAAA record"); continue
       fi
       # Only a fast TCP reset proves our REJECT fired. DNS failure (6), no route,
       # TLS/proxy errors or timeouts say nothing about the firewall, so they FAIL.
@@ -228,7 +353,40 @@ verify() {
       else
         rows+=("$host (v$fam) blocked|FAIL|REACHABLE in ${dt} ms"); fails=$((fails+1))
       fi
+      # stale IPs: DNS moved since `on` ran; curl may have hit a still-blocked address
+      if [[ $EUID -ne 0 ]]; then continue; fi
+      if [[ $fam == 4 ]]; then ipt=$IPT4; else ipt=$IPT6; fi
+      if [[ -z $ipt ]] || ! "$ipt" -S "$CHAIN" >/dev/null 2>&1; then continue; fi
+      # shellcheck disable=SC2086  # word-split the address list on purpose
+      miss=$(uncovered "$fam" $ips | tr '\n' ' ')
+      if [[ -n ${miss// /} ]]; then
+        if "$ipt" -S "$CHAIN" | grep -qx -- "-A $CHAIN -j REJECT"; then
+          rows+=("$host (v$fam) IPs in chain|INFO|not listed, but default-deny covers: ${miss:0:40}")
+        else
+          rows+=("$host (v$fam) IPs in chain|FAIL|stale chain, re-run on: ${miss:0:40}"); fails=$((fails+1))
+        fi
+      fi
     done
+  done
+  if [[ $EUID -ne 0 ]]; then
+    rows+=("stale-IP check|SKIP|run as root to compare fresh DNS with the chain")
+  fi
+  # containers egress via FORWARD -> DOCKER-USER, not OUTPUT
+  if docker_present; then
+    if [[ $EUID -ne 0 ]]; then rows+=("DOCKER-USER hooked|SKIP|run as root to check")
+    else
+      for ipt in "$IPT4" "$IPT6"; do
+        [[ -n $ipt ]] || continue
+        if "$ipt" -C DOCKER-USER -j "$CHAIN" 2>/dev/null; then rows+=("DOCKER-USER hooked ($ipt)|PASS|container egress filtered")
+        else rows+=("DOCKER-USER hooked ($ipt)|FAIL|containers bypass the airgap; re-run on"); fails=$((fails+1)); fi
+      done
+    fi
+  fi
+  local p
+  for p in HTTPS_PROXY https_proxy ALL_PROXY all_proxy; do
+    if [[ -n ${!p:-} ]]; then
+      rows+=("$p set|INFO|probes went via ${!p:0:40}; a proxy can relay past the block-list")
+    fi
   done
   local port
   for port in 8000 8001 8002; do
@@ -242,13 +400,13 @@ verify() {
   if [[ $body == *'"ok":true'* ]]; then rows+=("slack.com/api/api.test works|PASS|ok:true")
   else rows+=("slack.com/api/api.test works|FAIL|${body:0:50}"); fails=$((fails+1)); fi
 
-  printf '%-34s %-5s %s\n' CHECK RES DETAIL
-  printf '%-34s %-5s %s\n' "----------------------------------" "-----" "------"
+  printf '%-48s %-5s %s\n' CHECK RES DETAIL
+  printf '%-48s %-5s %s\n' "------------------------------------------------" "-----" "------"
   local r a b c
   for r in "${rows[@]}"; do
     IFS='|' read -r a b c <<<"$r"
     case $b in PASS) b=$'\033[1;32mPASS \033[0m' ;; FAIL) b=$'\033[1;31mFAIL \033[0m' ;; *) b=$(printf '%-5s' "$b") ;; esac
-    printf '%-34s %s %s\n' "$a" "$b" "$c"
+    printf '%-48s %s %s\n' "$a" "$b" "$c"
   done
   if [[ $fails -eq 0 ]]; then green "AIRGAP VERIFY: PASS"; else red "AIRGAP VERIFY: FAIL ($fails)"; fi
   [[ $fails -eq 0 ]]
@@ -262,6 +420,6 @@ case $cmd in
   status) [[ $EUID -eq 0 ]] && init_backends; status ;;
   verify) verify ;;
   dry-run) DRY_RUN=1; init_backends; if [[ ${2:-} == airtight ]]; then airtight; else on; fi ;;
-  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
   *) echo "usage: $0 [on|off|airtight|status|verify|dry-run [airtight]]" >&2; exit 2 ;;
 esac

@@ -44,7 +44,10 @@ inside_main() {
   local p s1 s2 s61 s62 out rc
   p=$(probe api.openai.com 4)
   echo "INFO baseline api.openai.com v4: http/exit=$p"
-  [[ ${p%% *} != 000 ]] || result baseline FAIL "api.openai.com unreachable BEFORE lockdown; test invalid"
+  if [[ ${p%% *} == 000 ]]; then  # nothing below would mean anything; pytest skips on this
+    echo "RESULT baseline FAIL api.openai.com unreachable BEFORE lockdown (no internet, or host airgap on)"
+    return 1
+  fi
 
   # non-root subcommands must work without root
   rc=0; out=$(setpriv --reuid=65534 --regid=65534 --clear-groups bash "$L" dry-run 2>&1) || rc=$?

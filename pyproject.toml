@@ -2,11 +2,19 @@
 name = "wreckless"
 version = "0.1.0"
 description = "Always-on local-first agentic SecOps swarm (Purple/Red/Blue) for Dell Pro Max GB10"
+readme = "README.md"
+# license: TODO, no LICENSE file in the repo yet; add `license = "<SPDX id>"` once one is chosen.
 requires-python = ">=3.12"
-dependencies = ["openai>=1.40", "pytest>=8", "rich>=13", "slack_sdk>=3.27", "aiohttp>=3.9", "openshell>=0.1.5"]
+# pytest stays a runtime dependency: without an OpenShell gateway the userland enclave runs the
+# held-out tests and Blue's run_pytest with this interpreter (`sys.executable -m pytest`).
+dependencies = ["openai>=1.40", "pytest>=8", "rich>=13", "slack_sdk>=3.27", "aiohttp>=3.9"]
 
 [project.optional-dependencies]
 slack = ["slack-bolt>=1.20"]
+# OpenShell sandboxes for the verify gate; without it the userland guard is used (see README).
+openshell = ["openshell>=0.1.5"]
+# `hf` CLI used by scripts/download_models.sh
+models = ["huggingface_hub>=2.3"]
 
 [project.scripts]
 wreckless = "wreckless.cli:main"
@@ -16,6 +24,11 @@ include = ["wreckless*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# airgap needs Docker + NET_ADMIN + internet; run it explicitly: pytest -m airgap tests/airgap
+addopts = "-m 'not airgap'"
+markers = [
+    "airgap: container test of scripts/airgap_lockdown.sh (needs Docker, NET_ADMIN, internet)",
+]
 
 [build-system]
 requires = ["setuptools>=69"]

@@ -1,8 +1,10 @@
 """Container test for scripts/airgap_lockdown.sh (never touches the host firewall).
 
 Runs the scenario in tests/airgap/run_in_container.sh inside a --cap-add NET_ADMIN
-Docker container. Skipped (not failed) when Docker is unavailable, or when
-WRECKLESS_SKIP_AIRGAP=1. Needs internet access from the container.
+Docker container. Marked `airgap` and deselected by default (pyproject addopts); run it
+with `pytest -m airgap tests/airgap`. Skipped (not failed) when Docker is unavailable, when
+WRECKLESS_SKIP_AIRGAP=1, or when the container has no internet before the lockdown (for
+example because the host's own airgap is on: DOCKER-USER routes container egress through it).
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.airgap
 
 RUN_SH = Path(__file__).with_name("run_in_container.sh")
 CHECKS = [
@@ -71,7 +75,8 @@ def results() -> dict[str, tuple[str, str]]:
             _, name, verdict, *rest = line.split(" ", 3)
             out[name] = (verdict, rest[0] if rest else "")
     assert out, f"no RESULT lines; rc={proc.returncode}\n{proc.stderr}"
-    assert "baseline" not in out, f"baseline invalid: {out['baseline']}"
+    if "baseline" in out:
+        pytest.skip(f"precondition not met, no internet from the container: {out['baseline'][1]}")
     return out
 
 
