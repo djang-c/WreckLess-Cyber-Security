@@ -1,0 +1,9 @@
+{
+  "description": "Minimal workspace-assistant replica (RAG over chat messages + a chat client that renders the answer). Models the 2024 Slack AI exfiltration pattern disclosed by PromptArmor. Not a real product's code.",
+  "source": ".",
+  "python": "host",
+  "functional_tests": "tests",
+  "benchmarks": "",
+  "inventory": "inventory.json",
+  "image": "wreckless-sandbox:py312"
+}

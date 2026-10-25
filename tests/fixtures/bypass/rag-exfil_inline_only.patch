@@ -1,0 +1,12 @@
+diff --git a/victim/render.py b/victim/render.py
+index 2348fa9..c1a22ad 100644
+--- a/victim/render.py
++++ b/victim/render.py
+@@ -25,6 +25,7 @@ def _img(alt: str, url: str) -> str:
+ 
+ 
+ def render(markdown: str) -> str:
++    markdown = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", markdown)   # drop markdown images
+     refs = {m["id"].lower(): m["url"] for m in _REF_DEF.finditer(markdown)}
+ 
+     def image(m: re.Match) -> str:

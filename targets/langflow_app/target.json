@@ -1,0 +1,9 @@
+{
+  "description": "Minimal replica of Langflow's HTTP API around POST /api/v1/validate/code, adapted from langflow-ai/langflow (MIT) at 8f4515e6, the parent of the CVE-2025-3248 fix. Requests are handled in-process (no server, no network).",
+  "source": ".",
+  "python": "host",
+  "functional_tests": "tests",
+  "benchmarks": "",
+  "inventory": "inventory.json",
+  "image": "wreckless-sandbox:py312"
+}

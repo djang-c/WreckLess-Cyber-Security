@@ -164,8 +164,10 @@ Ralph saved the exploit under the wrong filename, ran out of steps while rewriti
 |---|---|---|
 | **CVE-2024-21513** | Prompt injection turns a SQL chain's `eval()` into code execution | minimal replica + real `langchain-experimental` @ `ce61840e` |
 | **CVE-2023-44467** | `PALChain` denylist misses `__import__` | minimal replica + real `langchain-experimental` |
+| **CVE-2025-3248** | Langflow: unauthenticated `/api/v1/validate/code` execs a submitted function's decorators and default arguments | replica of Langflow's `validate_code` (`langflow_app`) |
+| **WL-2024-RAG-EXFIL** | Poisoned public message makes a RAG assistant's answer load an image that carries a private-channel key (modelled on Slack AI, 2024; not a CVE) | replica (`rag_app`) |
 
-Scripted runs (`--no-llm`) pass 3/3 on both cases and both targets.
+Scripted runs (`--no-llm`) pass 3/3 on all four cases (the first two on both targets). Hardening probes on the reference patch: 21513 n/a, 44467 3/4, CVE-2025-3248 0/3, WL-2024-RAG-EXFIL 4/4. Run the new ones with `--target langflow_app` / `--target rag_app`.
 
 ---
 
@@ -197,11 +199,14 @@ scripts/serve_models.sh           # three vLLM servers
 
 ## Honest limits
 
-- **Two CVEs so far**, both code execution in `langchain-experimental`. The pipeline is generic (`benchmarks/<CVE>/`, `targets/<name>/`), but we claim only what the benchmarks show.
+- **Four cases so far**: two code-execution CVEs in `langchain-experimental` (replica and real upstream), plus two replica-only cases (CVE-2025-3248 and WL-2024-RAG-EXFIL). The pipeline is generic (`benchmarks/<CVE>/`, `targets/<name>/`), but we claim only what the benchmarks show.
 - **The 5/5 is one case, five runs.** It is a measurement of this build, not a guarantee.
 - **The CVE-2024-21513 upstream fix shipped with no test.** Our held-out tests are derived from the fix by us. They are not the maintainers' tests.
 - **The gate catches a model's false claims, not a hostile exploit author.** A payload that leaves Python is outside the in-process hook, and the control run is the backstop. Closing that fully needs out-of-process recording.
-- **A reference patch has gaps:** the cached CVE-2023-44467 fix scores 3/4 on our non-gating hardening probes.
+- **A reference patch has gaps:** the cached CVE-2023-44467 fix scores 3/4 on our non-gating hardening probes. CVE-2025-3248's reference patch, like upstream's fix (PR 6911), only adds authentication, so a logged-in user's decorator still runs (0/3).
+- **CVE-2025-3248 is a replica**, adapted from Langflow's MIT source at `8f4515e6` (requests handled in-process), not the real Langflow. Upstream's fix did ship a test (unauthenticated gets 401); ours is adapted from it and extended.
+- **WL-2024-RAG-EXFIL is a local model of a disclosed incident**, not a CVE and not a vendor's code (PromptArmor on Slack AI, August 2024). There is no upstream test; the held-out tests follow the public remediation guidance. The gate runs a stand-in model that obeys the injected message, so it verifies rendering and egress, not that a model can be talked into it; `--agentic` uses the real victim LLM (the 7B followed the poison in 4 of 5 hand runs; the fifth printed the key in plain text, which a render fix cannot stop). The oracle is a lab egress tap in the replica, so the gate's flawed-path report names `egress.py:_audit`, not `render.py`.
+- **The Purple loop queues every benchmark bundle for whatever target the daemon runs**, so the daemon on `victim_app` also queues the two replica-only cases, which the gate rejects there.
 - **Without an OpenShell gateway** the sandbox falls back to a Python-level guard, which is not kernel isolation.
 - **Cached fallbacks are labelled.** If a step uses one, the terminal and the Slack card say **CACHED REFERENCE, not AI-generated**.
 
