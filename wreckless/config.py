@@ -90,6 +90,6 @@ class Settings:
     demo_mode: bool = False         # N=1, temperature 0, cached fallback on failure
     use_llm: bool = True
     agentic_exploit: bool = False   # drive the exploit through the victim LLM (prompt injection)
-    max_agent_steps: int = 12
+    max_agent_steps: int = 20
     target: str = "victim_app"      # targets/<name>/target.json: victim_app | langchain (real upstream)
     live_intel_hosts: tuple = ("api.github.com", "api.osv.dev", "www.cisa.gov", "services.nvd.nist.gov")

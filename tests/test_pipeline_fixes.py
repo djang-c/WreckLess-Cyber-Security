@@ -202,3 +202,12 @@ def test_a_verified_exploit_under_another_name_becomes_the_contract_script(item)
     tools = red.RedTools(wt, enclave, d, Settings())
     assert "VERIFIED-ELIGIBLE" in tools.sandbox_exec("simple_exploit.py")
     assert tools.eligible and (d / "repro_exploit.py").read_bytes() == (d / "simple_exploit.py").read_bytes()
+
+
+def test_write_file_always_saves_the_contract_script_and_sandbox_exec_finds_it(item):
+    import shutil
+    wt, enclave, _, d = item
+    tools = red.RedTools(wt, enclave, d, Settings())
+    ref = (BENCHMARKS / CVE / "known_good" / "repro_exploit.py").read_text()
+    assert "repro_exploit.py" in tools.write_file("exploit.py", ref) and not (d / "exploit.py").exists()
+    assert "VERIFIED-ELIGIBLE" in tools.sandbox_exec("exploit.py")   # the name the model remembers

@@ -29,7 +29,8 @@ ATTACK_SYSTEM = f"""You are Top Hat, an offensive security agent in an isolated,
 Goal: write `repro_exploit.py` proving the advisory is exploitable against the victim repo,
 and iterate with sandbox_exec until it reports VERIFIED-ELIGIBLE.
 {CONTRACT}
-Read the vulnerable source before writing. Be concise."""
+Read the vulnerable source before writing. After every write_file, run sandbox_exec on it at once:
+never rewrite the script without having run it. Be concise."""
 
 HUNT_SYSTEM = f"""You are Top Hat, hunting for code-execution flaws in an authorized lab target.
 Explore the victim repo (read_file '.' lists files). Look for places where data that an
@@ -64,9 +65,10 @@ class RedTools:
         return p.read_text()
 
     def write_file(self, path: str, content: str) -> str:
-        name = Path(path).name
-        (self.out / name).write_text(content)
-        return f"wrote {name} ({len(content)} bytes)"
+        # one exploit per run, under the contract's name: a model that picks its own filename
+        # (exploit.py, simple_exploit.py) would leave the gate with nothing to run
+        (self.out / "repro_exploit.py").write_text(content)
+        return f"wrote repro_exploit.py ({len(content)} bytes). Run it now with sandbox_exec."
 
     def git_checkout(self, branch: str) -> str:
         # The ref comes from the model: never let it reach git as an option.
@@ -82,6 +84,8 @@ class RedTools:
     def sandbox_exec(self, script_path: str = "repro_exploit.py") -> str:
         args = exploit_args(self.s)
         script = self.out / Path(script_path).name
+        if not script.exists():
+            script = self.out / "repro_exploit.py"   # whatever name the model remembers, there is one script
         r = self.enclave.run_exploit(script, self.wt, args, victim_env(self.s))
         self.eligible = r.verified
         if r.verified and script.name != "repro_exploit.py":
