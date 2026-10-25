@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,46 +45,64 @@ class Item:
 class CandidateQueue:
     def __init__(self, db: Path, events: EventLog):
         self.events = events
-        self._lock = threading.Lock()
-        self.conn = sqlite3.connect(db, check_same_thread=False)
+        # One connection shared by this process's threads (RLock), several processes on one
+        # file (daemon + `run` share a home): writes take the db lock up front (BEGIN IMMEDIATE).
+        self._lock = threading.RLock()
+        self.conn = sqlite3.connect(db, check_same_thread=False, timeout=30, isolation_level=None)
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+
+    @contextmanager
+    def _write(self):
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+            self.conn.execute("COMMIT")
+
+    def _read(self, sql: str, args: tuple = ()) -> list:
+        with self._lock:
+            return self.conn.execute(sql, args).fetchall()
 
     def enqueue(self, source: str, title: str, cve: str | None = None, payload: dict | None = None) -> str:
         now = time.time()
-        with self._lock:
+        with self._write():
             n = self.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] + 1
             item_id = f"{cve or 'HUNT'}#{n}"
             self.conn.execute("INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?)",
                               (item_id, source, cve, title, "queued", "PREDICTION",
                                json.dumps(payload or {}), "[]", now, now))
-            self.conn.commit()
         self.events.emit("core", "enqueue", item_id, source=source, title=title)
         return item_id
 
     def get(self, item_id: str) -> Item:
-        row = self.conn.execute("SELECT id, source, cve, title, state, label, payload, history "
-                                "FROM items WHERE id=?", (item_id,)).fetchone()
+        row = self._read("SELECT id, source, cve, title, state, label, payload, history "
+                         "FROM items WHERE id=?", (item_id,))[0]
         return Item(*row[:6], json.loads(row[6]), json.loads(row[7]))
 
     def advance(self, item_id: str, new: str, actor: str, **data) -> Item:
-        with self._lock:
+        with self._write():
             item = self.get(item_id)
             if new not in LIFECYCLE.get(item.state, set()):
                 raise RuntimeError(f"{item_id}: illegal transition {item.state} -> {new}")
             item.history.append({"t": time.time(), "from": item.state, "to": new, "actor": actor, **data})
             label = LABEL.get(new, item.label)
-            self.conn.execute("UPDATE items SET state=?, label=?, history=?, updated=? WHERE id=?",
-                              (new, label, json.dumps(item.history), time.time(), item_id))
-            self.conn.commit()
+            cur = self.conn.execute(
+                "UPDATE items SET state=?, label=?, history=?, updated=? WHERE id=? AND state=?",
+                (new, label, json.dumps(item.history), time.time(), item_id, item.state))
+            if cur.rowcount != 1:  # moved by someone else since we read it
+                raise RuntimeError(f"{item_id}: {item.state} -> {new} lost a race")
         self.events.emit(actor, "transition", item_id, frm=item.state, to=new, data=data)
         ui.transition(item_id, item.state, new, actor)
         return self.get(item_id)
 
     def update_payload(self, item_id: str, **fields) -> None:
-        with self._lock:
+        with self._write():
             payload = self.get(item_id).payload | fields
             self.conn.execute("UPDATE items SET payload=? WHERE id=?", (json.dumps(payload), item_id))
-            self.conn.commit()
 
     def try_advance(self, item_id: str, new: str, actor: str, **data) -> Item | None:
         """advance(), but None instead of raising if another worker already moved the item."""
@@ -101,26 +120,25 @@ class CandidateQueue:
 
     def recover(self) -> list[str]:
         """After a crash, nothing is really in flight: fail items left mid-verify/patch."""
-        stuck = [r[0] for r in self.conn.execute(
-            "SELECT id FROM items WHERE state IN ('verifying', 'patching')")]
+        stuck = [r[0] for r in self._read("SELECT id FROM items WHERE state IN ('verifying', 'patching')")]
         for item_id in stuck:
             self.fail(item_id, "core", "interrupted (process restarted)")
         return stuck
 
     def next_queued(self) -> str | None:
-        row = self.conn.execute("SELECT id FROM items WHERE state='queued' ORDER BY created LIMIT 1").fetchone()
-        return row[0] if row else None
+        rows = self._read("SELECT id FROM items WHERE state='queued' ORDER BY created LIMIT 1")
+        return rows[0][0] if rows else None
 
     def has_cve(self, cve: str) -> bool:
-        return self.conn.execute("SELECT 1 FROM items WHERE cve=?", (cve,)).fetchone() is not None
+        return bool(self._read("SELECT 1 FROM items WHERE cve=?", (cve,)))
 
     def stats(self) -> dict:
-        rows = self.conn.execute("SELECT source, label, state, COUNT(*) FROM items GROUP BY 1,2,3").fetchall()
+        rows = self._read("SELECT source, label, state, COUNT(*) FROM items GROUP BY 1,2,3")
         return {"total": sum(r[3] for r in rows),
                 "by_label": _sum(rows, 1), "by_state": _sum(rows, 2), "by_source": _sum(rows, 0)}
 
     def all(self) -> list[Item]:
-        ids = [r[0] for r in self.conn.execute("SELECT id FROM items ORDER BY created")]
+        ids = [r[0] for r in self._read("SELECT id FROM items ORDER BY created")]
         return [self.get(i) for i in ids]
 
 

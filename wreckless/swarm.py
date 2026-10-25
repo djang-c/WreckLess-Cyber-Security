@@ -1,9 +1,11 @@
 """Always-on swarm: two producers (scheduled Purple, continuous Red-hunt) -> one queue ->
 one verify gate -> Blue -> validation -> notify. Each item walks its own lifecycle."""
 import json
+import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from wreckless import gate, ui
@@ -23,8 +25,31 @@ class Swarm:
         self.events = EventLog(self.home / "events.jsonl").attach()
         self.queue = CandidateQueue(self.home / "queue.db", self.events)
         self.hero = threading.Event()      # set while the demo's critical path runs
+        self.hero_file = self.home / "hero.lock"   # same signal for a daemon in another process
         self.stop = threading.Event()
         self.started = time.time()
+
+    def hero_active(self) -> bool:
+        """A hero run is in flight here or in another process sharing this home."""
+        if self.hero.is_set():
+            return True
+        try:
+            os.kill(int(self.hero_file.read_text()), 0)
+        except PermissionError:         # alive, owned by another user
+            return True
+        except (OSError, ValueError):   # no file, junk, or a hero that died without cleanup
+            return False
+        return True
+
+    @contextmanager
+    def hero_lock(self):
+        self.hero.set()
+        self.hero_file.write_text(str(os.getpid()))
+        try:
+            yield
+        finally:
+            self.hero_file.unlink(missing_ok=True)
+            self.hero.clear()
 
     # ---------- producers ----------
     def submit_cve(self, cve: str) -> str:
@@ -48,7 +73,7 @@ class Swarm:
         """Continuous: propose candidate flaws. Yields to the hero item (bandwidth on one GPU)."""
         n = 0
         while not self.stop.is_set():
-            if self.hero.is_set():
+            if self.hero_active():
                 self.stop.wait(pause)
                 continue
             n += 1
@@ -73,6 +98,9 @@ class Swarm:
     # ---------- the per-item lifecycle ----------
     def process(self, item_id: str) -> str:
         self.events.item.id = item_id
+        # claim before touching disk: an unclaimed item belongs to someone else (maybe the hero)
+        if not self.queue.try_advance(item_id, "verifying", "gate"):
+            return "skipped"  # another worker or process claimed it first
         d = self.home / "items" / item_id.replace("#", "-")
         d.mkdir(parents=True, exist_ok=True)
         enclave = Enclave(d, sys.executable)
@@ -88,8 +116,6 @@ class Swarm:
         t0 = time.time()
 
         # verifying: Red proposes (if needed), the gate disposes
-        if not self.queue.try_advance(item_id, "verifying", "gate", commit=commit):
-            return "skipped"  # another worker claimed it first
         red_wt = worktree(src, d / "wt-red", f"red/{item_id.replace('#', '-')}")
         ui.mascot("red")
         if item.source == "purple":
@@ -157,17 +183,14 @@ class Swarm:
     # ---------- runtime ----------
     def run_hero(self, cve: str) -> str:
         """The demo critical path: one item, background hunting paused."""
-        self.hero.set()
-        try:
+        with self.hero_lock():
             return self.process(self.submit_cve(cve))
-        finally:
-            self.hero.clear()
 
     def worker_loop(self) -> None:
         while not self.stop.is_set():
-            item_id = self.queue.next_queued()
-            # hero is set before its item is enqueued, so this also keeps us off the hero item
-            if not item_id or self.hero.is_set():
+            # the hero lock is taken before its item is enqueued, so this also keeps us off it
+            item_id = None if self.hero_active() else self.queue.next_queued()
+            if not item_id:
                 self.stop.wait(2)
                 continue
             try:
@@ -186,7 +209,8 @@ class Swarm:
     def run_daemon(self, purple_interval: float, hunt: bool, slack_listener: bool = False,
                    heartbeat: float = 30) -> None:
         ui.banner(f"WreckLess always-on swarm · {self.s.mode} mode · home {self.home}")
-        for item_id in self.queue.recover():
+        # a hero in another process really is in flight: only recover when none is running
+        for item_id in ([] if self.hero_active() else self.queue.recover()):
             ui.say("core", f"{item_id} was interrupted by a restart → failed")
         threads = [threading.Thread(target=self.purple_loop, args=(purple_interval,), daemon=True),
                    threading.Thread(target=self.worker_loop, daemon=True)]
