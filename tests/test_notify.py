@@ -105,6 +105,29 @@ def test_slack_ok_false_goes_to_outbox(monkeypatch, bot):
     assert "not_in_channel" in n.outbox.read_text()
 
 
+def test_non_json_slack_body_is_a_failure_not_a_silent_success(monkeypatch, bot):
+    n, _ = bot
+    monkeypatch.setattr(Notifier, "_post", staticmethod(lambda *a, **k: {}))  # proxy HTML page
+    assert n.send("purple", "t", "b") == "outbox" and n.ts is None
+    assert "non-JSON" in n.outbox.read_text()
+
+
+def test_failed_update_resets_ts_so_next_beat_posts_fresh(monkeypatch, bot):
+    n, calls = bot
+    assert n.send("purple", "t1", "b") == "slack:chat.postMessage" and n.ts == "111.222"
+    real = Notifier._post
+
+    def deleted(url, payload, headers=None):
+        calls.append((url, payload))
+        return {"ok": False, "error": "message_not_found"}
+
+    monkeypatch.setattr(Notifier, "_post", staticmethod(deleted))
+    assert n.send("red", "t2", "b") == "outbox" and n.ts is None
+    monkeypatch.setattr(Notifier, "_post", staticmethod(real))
+    assert n.send("blue", "t3", "b") == "slack:chat.postMessage"
+    assert calls[-1][0].endswith("chat.postMessage") and "ts" not in calls[-1][1]
+
+
 def test_webhook_and_outbox_fallbacks(monkeypatch, tmp_path):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.invalid/x")

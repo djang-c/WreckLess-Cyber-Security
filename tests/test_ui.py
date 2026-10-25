@@ -94,6 +94,19 @@ def test_untrusted_escapes_never_reach_the_terminal(monkeypatch):
     assert "\x07" not in out and "abcd" in out and "\x1b[31m" in out
 
 
+@pytest.mark.parametrize("animate", [False, True])
+def test_intrusion_banner_sanitizes_untrusted_fields(monkeypatch, animate):
+    buf = _TTY()
+    monkeypatch.setattr("sys.stdout", buf)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(ui, "_animate", lambda: animate)
+    monkeypatch.setattr(ui.time, "sleep", lambda s: None)
+    ui.intrusion("CVE-X#1\x1b]0;PWNED\x07", "x.py\x1b[2J", "llm\x1b]52;c;aGk=\x07", _record=False)
+    out = buf.getvalue()
+    assert "PWNED" not in out and "]52;" not in out and "\x1b[2J" not in out and "\x07" not in out
+    assert "INTRUSION" in out and ui.ON_RED in out
+
+
 def test_replay_renders_recorded_beats(tmp_path, capsys, monkeypatch):
     from wreckless.events import EventLog, replay
     monkeypatch.setattr(ui, "SINK", None)
@@ -155,11 +168,12 @@ def test_replay_banner_shows_recording_date_and_age(tmp_path, capsys, monkeypatc
 
 
 def test_replay_mode_is_reset_even_if_replay_crashes(tmp_path, capsys, monkeypatch):
-    from wreckless.events import replay
+    from wreckless import events
     path = _record_one(tmp_path, monkeypatch)
-    path.write_text(path.read_text() + "{not json\n")
-    with pytest.raises(json.JSONDecodeError):
-        replay(path, speed=0)
+    # bad lines are skipped now, so crash the renderer itself
+    monkeypatch.setattr(events, "_render", lambda ev: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        events.replay(path, speed=0)
     capsys.readouterr()
     ui.say("core", "live again")
     assert "REPLAY" not in capsys.readouterr().out

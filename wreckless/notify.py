@@ -122,10 +122,17 @@ class Notifier:
                 payload = {"channel": self.channel, "blocks": blocks, "text": title}
                 if self.ts:
                     payload["ts"] = self.ts
-                r = self._post(f"https://slack.com/api/{method}", payload,
-                               {"Authorization": f"Bearer {self.token}"})
-                if r.get("ok") is False:
-                    raise RuntimeError(r.get("error", "slack api error"))
+                try:
+                    r = self._post(f"https://slack.com/api/{method}", payload,
+                                   {"Authorization": f"Bearer {self.token}"})
+                    # the Web API always answers JSON with "ok"; anything else (proxy page,
+                    # empty body) recorded nothing and gave us no ts to update later
+                    if r.get("ok") is not True:
+                        raise RuntimeError(r.get("error", "slack api error" if r else "non-JSON slack response"))
+                except Exception:
+                    if self.ts:  # message deleted / not updatable: the next beat posts a fresh card
+                        self.ts = None
+                    raise
                 self.ts = r.get("ts", self.ts)
                 self.channel = r.get("channel", self.channel)  # chat.update needs the channel ID
                 return f"slack:{method}"

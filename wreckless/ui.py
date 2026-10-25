@@ -54,7 +54,7 @@ CAPTIONS = {
 # Set by EventLog so terminal output can be replayed later: (role, kind, **data) -> None.
 SINK = None
 REPLAYABLE = {"say", "detail", "banner", "mascot", "intrusion", "diff", "scoreboard",
-              "patch_validated", "notified", "gb10_panel"}
+              "patch_validated", "notified"}
 
 
 def _emit(role: str, kind: str, **data) -> None:
@@ -183,16 +183,17 @@ def intrusion(item: str, script: str, source: str, strength: str | None = "verif
             _out(body.center(w))
             _out("!" * w)
         return
+    body = strip_ansi(body)  # item/script/source are untrusted; also keeps len() == visible width
     lines = [" " * w, title.center(w), body[:w].center(w), " " * w]
     with _LOCK:  # the flash moves the cursor up; no other thread may print in between
         for i in range(3 if _animate() else 0):
             style = ON_RED if i % 2 == 0 else "\033[7;31;1m"
             for ln in lines:
-                print(f"{style}{ln}{RESET}", flush=True)
+                print(sanitize(f"{style}{ln}{RESET}"), flush=True)
             time.sleep(0.12)
             print(f"\033[{len(lines)}F", end="", flush=True)
         for ln in lines:
-            print(f"{ON_RED}{ln}{RESET}", flush=True)
+            print(sanitize(f"{ON_RED}{ln}{RESET}"), flush=True)
 
 
 def diff(role: str, text: str, limit: int = 1500, _record: bool = True) -> None:
@@ -280,11 +281,10 @@ def _bar(frac: float, width: int) -> str:
     return "█" * n + "░" * (width - n)
 
 
-def gb10_panel(mem_total_gb: float, mem_used_gb: float, ports: list[dict], _record: bool = True) -> None:
+def gb10_panel(mem_total_gb: float, mem_used_gb: float, ports: list[dict]) -> None:
     """GB10 unified-memory + per-port throughput panel. ``ports`` are ``metrics.PortStats`` dicts;
-    a down port is shown as DOWN, tokens/sec as '—' until there are two samples."""
-    if _record:
-        _emit("core", "gb10_panel", mem_total_gb=mem_total_gb, mem_used_gb=mem_used_gb, ports=ports)
+    a down port is shown as DOWN, tokens/sec as '—' until there are two samples.
+    Live-only: ``wreckless metrics`` runs outside a swarm, so the panel is never recorded/replayed."""
     inner = 62
     used = mem_used_gb / mem_total_gb if mem_total_gb else 0
     up = [p for p in ports if p.get("up")]
