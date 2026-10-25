@@ -77,7 +77,8 @@ class Swarm:
         t0 = time.time()
 
         # verifying: Red proposes (if needed), the gate disposes
-        self.queue.advance(item_id, "verifying", "gate", commit=commit)
+        if not self.queue.try_advance(item_id, "verifying", "gate", commit=commit):
+            return "skipped"  # another worker claimed it first
         red_wt = worktree(src, d / "wt-red", f"red/{item_id.replace('#', '-')}")
         if item.source == "purple":
             prop = red.attack(item.payload["intel"], red_wt, enclave, d, self.s)
@@ -147,13 +148,20 @@ class Swarm:
     def worker_loop(self) -> None:
         while not self.stop.is_set():
             item_id = self.queue.next_queued()
-            if item_id:
-                self.process(item_id)
-            else:
+            # hero is set before its item is enqueued, so this also keeps us off the hero item
+            if not item_id or self.hero.is_set():
                 self.stop.wait(2)
+                continue
+            try:
+                self.process(item_id)
+            except Exception as e:  # one bad item must not kill the worker thread
+                ui.say("core", f"{item_id} crashed: {type(e).__name__}: {e}")
+                self.queue.fail(item_id, "core", f"crashed: {type(e).__name__}: {e}"[:300])
 
     def run_daemon(self, purple_interval: float, hunt: bool) -> None:
         ui.banner(f"WreckLess always-on swarm · {self.s.mode} mode · home {self.home}")
+        for item_id in self.queue.recover():
+            ui.say("core", f"{item_id} was interrupted by a restart → failed")
         threads = [threading.Thread(target=self.purple_loop, args=(purple_interval,), daemon=True),
                    threading.Thread(target=self.worker_loop, daemon=True)]
         if hunt:

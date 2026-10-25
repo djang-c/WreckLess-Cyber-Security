@@ -128,3 +128,13 @@ def test_replay_renders_recorded_run(tmp_path, capsys):
     replay(tmp_path / "events.jsonl", speed=1000)
     out = capsys.readouterr().out
     assert "EXPLOIT VERIFIED" in out and "done in" in out
+
+
+def test_recover_fails_items_left_in_flight(tmp_path):
+    q = CandidateQueue(tmp_path / "q.db", EventLog(tmp_path / "events.jsonl"))
+    a, b, c = (q.enqueue("purple", t) for t in "abc")
+    q.advance(a, "verifying", "gate")
+    q.advance(b, "verifying", "gate"); q.advance(b, "verified", "gate"); q.advance(b, "patching", "blue")
+    assert sorted(q.recover()) == sorted([a, b])
+    assert [q.get(i).state for i in (a, b, c)] == ["rejected", "patch_failed", "queued"]
+    assert q.try_advance(a, "verifying", "gate") is None  # second claim is refused, not raised
