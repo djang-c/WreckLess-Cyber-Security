@@ -66,8 +66,9 @@ uv sync --extra slack                 # adds slack-bolt (optional; core pipeline
 
 ## 4. Run
 
-The listener is a daemon thread, so it dies when `wreckless run` exits. To keep the
-buttons clickable after the run, run the listener as its own process:
+`wreckless run` does not start the listener; only `wreckless daemon --slack-listener` does
+(as a thread that lives as long as the daemon). For a one-off `run`, keep the buttons
+clickable by running the listener as its own process:
 
 ```bash
 uv run --extra slack python -m wreckless.slack_socket     # blocking; Ctrl-C to stop

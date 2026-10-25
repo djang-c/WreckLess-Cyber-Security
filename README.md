@@ -58,20 +58,20 @@ Regenerate the sheet above with `python3 scripts/mascot_sheet.py`.
 
 ## 🔁 The state machine
 
-Every hand-off is a JSON transition written to `runs/<id>/state.json`. Skipping a step is impossible: the orchestrator rejects illegal transitions.
+Every item lives in a SQLite work queue (`<home>/queue.db`, default home `runs/swarm`) and every hand-off is a transition appended to `<home>/events.jsonl` (the source for `wreckless replay`). Skipping a step is impossible: the queue rejects illegal transitions, and every in-flight state has a terminal failure so a crash or restart never strands an item.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> INTEL_READY: 🕵️ advisory ingested
-    INTEL_READY --> EXPLOITING: 🎩 attack starts
-    EXPLOITING --> EXPLOIT_VERIFIED: oracle hit
-    EXPLOITING --> EXPLOIT_FAILED: no proof, no report
-    EXPLOIT_VERIFIED --> PATCHING: 👷 report handed to Blue
-    PATCHING --> PATCH_VALIDATED: all 3 checks pass
-    PATCHING --> PATCH_FAILED: needs a human
-    PATCH_VALIDATED --> NOTIFIED: 💬 Slack
-    NOTIFIED --> [*]
+    [*] --> queued: 🕵️ advisory ingested (PREDICTION)
+    queued --> verifying: 🎩 claimed by the gate
+    verifying --> verified: oracle hit, missed on the control (VERIFIED)
+    verifying --> rejected: no proof, no report (REJECTED)
+    verified --> patching: 👷 report handed to Blue
+    patching --> patched: all 3 checks pass
+    patching --> patch_failed: needs a human
+    patched --> notified: 💬 Slack
+    patched --> notify_failed: crashed while notifying
+    notified --> [*]
 ```
 
 ---
@@ -234,6 +234,20 @@ scripts/serve_models.sh               # 3 vLLM servers, biggest first
 | `--agentic` | Exploit goes through the victim LLM via prompt injection (full chain) |
 | `--no-llm` | Scripted run with no models; used for CI and dev laptops |
 | `--target langchain` | Attack the real upstream code at the vulnerable commit (run `scripts/fetch_target.sh` first) |
+| `--home DIR` | Queue, events and item dirs (default `runs/swarm`; shared by `run`, `daemon`, `status`) |
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `wreckless run [--cve ID]` | One CVE through the pipeline: the demo critical path |
+| `wreckless daemon [--purple-interval S] [--no-hunt] [--slack-listener]` | Always-on: scheduled Purple, continuous Red hunt, a worker; `--slack-listener` serves the card's Approve/Reject buttons |
+| `wreckless status [--home DIR]` | Queue summary |
+| `wreckless replay [--speed X] [--item ID]` | Re-render a recorded run from `events.jsonl` |
+| `wreckless metrics [--watch S] [--json]` | GB10 memory and per-port tokens/sec from vLLM `/metrics` |
+| `wreckless intel sync\|list\|search\|show` | Purple's advisory DB (`sync` is the one command that needs the network) |
+
+Running it day to day (daemon, Slack listener, metrics, vLLM runtimes, airgap): [`docs/operations.md`](docs/operations.md).
 
 ### Slack (optional)
 
@@ -247,10 +261,15 @@ Without either variable, cards are written to `logs/slack_outbox.jsonl`.
 ### Airgap proof
 
 ```bash
-sudo scripts/airgap_lockdown.sh on      # blocks cloud LLM APIs; Slack and local vLLM stay up
-sudo scripts/airgap_lockdown.sh status
+sudo scripts/airgap_lockdown.sh on        # blocks cloud LLM APIs; Slack and local vLLM stay up; fails closed
+sudo scripts/airgap_lockdown.sh airtight  # default-deny instead: only loopback, LAN, DNS and Slack
+scripts/airgap_lockdown.sh verify         # PASS/FAIL table, non-zero on any FAIL (root adds stale-IP and Docker checks)
+scripts/airgap_lockdown.sh dry-run        # print the rules `on` would install
+scripts/airgap_lockdown.sh status         # no sudo needed for a summary
 sudo scripts/airgap_lockdown.sh off
 ```
+
+`on` resolves every domain before touching a rule and exits 1 if one does not resolve (keeping everything it blocked before), so never claim the airgap until `verify` passes. An HTTP(S) proxy on the LAN can relay past a block-list: unset proxies, or use `AIRTIGHT_LAN=0 ... airtight`.
 
 <!-- PLACEHOLDER: screenshot of airgap_lockdown.sh output with red ✗ BLOCKED lines -->
 <img src="docs/assets/airgap.png" alt="airgap lockdown output" width="70%">
@@ -260,16 +279,19 @@ sudo scripts/airgap_lockdown.sh off
 ## 📦 What a run leaves behind
 
 ```
-runs/CVE-2024-21513-<timestamp>/
-├── state.json                  # full state-machine history
-├── intel.json                  # 🕵️ advisory + hypothesis
-├── repro_exploit.py            # 🎩 standalone, runnable proof
-├── vulnerability_report.json   # 🎩 → 👷 hand-off contract
-├── fix.patch                   # 👷 the diff
-├── openshell_policy.json       # 👷 deny-all egress runtime policy
-├── validation.json             # ✅ logs from all three checks
-├── wt-red/  wt-blue/           # separate git worktrees per swarm
-└── victim-src/                 # victim repo; fix lands on branch wreckless/fix-<CVE>
+runs/swarm/                         # --home
+├── queue.db                        # work queue: every item's state + history
+├── events.jsonl                    # append-only trace, replayable
+├── hunts/pass-NNNN/                # Red's background hunt passes
+└── items/CVE-2024-21513-1/
+    ├── repro_exploit.py            # 🎩 standalone, runnable proof
+    ├── vulnerability_report.json   # 🎩 → 👷 hand-off contract
+    ├── fix.patch                   # 👷 the diff
+    ├── openshell_policy.json       # 👷 deny-all egress runtime policy
+    ├── validation.json             # ✅ logs from all three checks
+    ├── wt-red/  wt-blue/           # separate git worktrees per swarm
+    ├── victim-src/                 # victim repo; fix lands on branch wreckless/fix-<item>
+    └── .enclave/  tmp/             # guard + exploit staging, oracle files
 ```
 
 ---
@@ -278,22 +300,29 @@ runs/CVE-2024-21513-<timestamp>/
 
 | Path | What's inside |
 |---|---|
-| `wreckless/cli.py` | Orchestrator: Purple → Red → Blue → Slack |
+| `wreckless/cli.py` | Command line (`run`, `daemon`, `status`, `replay`, `metrics`, `intel`) |
+| `wreckless/swarm.py` | Orchestrator: per-item lifecycle Purple → Red → gate → Blue → Slack, daemon threads |
+| `wreckless/candidates.py` | SQLite work queue and the lifecycle state machine |
+| `wreckless/gate.py` | The single trust gate: differential oracle verify |
 | `wreckless/agents/` | `purple.py` · `red.py` · `blue.py` (tool-calling agents) |
-| `wreckless/state.py` | JSON state machine |
 | `wreckless/sandbox.py` | Exploit enclave: userland guard rail (OpenShell when installed) |
 | `wreckless/llm.py` | Tool-calling loop against local vLLM |
+| `wreckless/events.py` · `ui.py` | Event log + replay, terminal trace |
+| `wreckless/notify.py` · `slack_socket.py` | Slack cards, Socket Mode Approve/Reject |
+| `wreckless/feeds.py` · `kb.py` · `targets.py` | Advisory feeds, intel DB, victim targets |
+| `wreckless/metrics.py` | vLLM `/metrics` scrape + GB10 memory panel |
 | `targets/victim_app/` | Minimal replicas of the vulnerable LangChain functions (`vector_sql` @ 0.0.20, `pal_chain` @ aebdb1a) |
 | `benchmarks/CVE-*/` | Advisory, held-out regression test, reference exploit and patch |
-| `scripts/` | Model download, vLLM serving, airgap lockdown |
-| `wreckless-gb10-plan.md` | Deployment plan and memory math |
+| `scripts/` | Model download + serving (one manifest: `scripts/models.tsv`), airgap lockdown, OpenShell, demo |
+| `docs/gb10-plan.md` | Deployment plan and memory math |
+| `docs/operations.md` | Running it: daemon, Slack listener, metrics, vLLM runtimes, airgap |
 | `docs/knowledge-and-intel.md` | Intel feeds, RAG per role, fine-tuning plan |
 
 ---
 
 ## ⚠️ Honest limitations
 
-- **Sandbox:** exploits run in **OpenShell** sandboxes (kernel-enforced deny-all egress, read-only root; a test proves this holds even with our Python guard disabled). Without a running gateway, WreckLess falls back to a Python-level guard, which is **not** kernel isolation. `--agentic` mode needs an OpenShell policy that allows the sandbox to reach the victim LLM; until then it only works on the fallback guard. The fallback guard is a userland audit hook: `os.system`/subprocess children escape it.
+- **Sandbox:** exploits run in **OpenShell** sandboxes (kernel-enforced deny-all egress, read-only root; a test proves this holds even with our Python guard disabled). Without a running gateway, WreckLess falls back to a Python-level guard, which is **not** kernel isolation. `--agentic` mode needs an OpenShell policy that allows the sandbox to reach the victim LLM; until then it only works on the fallback guard. The fallback guard is a userland audit hook: `os.system`/subprocess children escape it. Within Python it confines payload writes to the run's `tmp/`, blocks egress and DNS, frame/gc introspection and payload `ctypes`, signs its provenance record, and any violation rejects the run.
 - **Two CVEs so far** (CVE-2024-21513, CVE-2023-44467), on two targets (minimal reproduction and real upstream). The pipeline is generic (`benchmarks/<CVE>/`, `targets/<name>/target.json`).
 - **Upstream static checks are narrower:** on the real target, the CVE-2024-21513 static check scans `vector_sql.py` itself, not its transitive imports (the real package legitimately imports `importlib`).
 - **Held-out tests run in-process with the patched code.** Conftest/ini/plugin injection is blocked and pass/fail is read from exit code + junit, but deliberately adversarial victim code could still tamper with the pytest process. The static checks (`static_test.py`) never import victim code, so they cannot be tampered with that way.
@@ -305,10 +334,10 @@ runs/CVE-2024-21513-<timestamp>/
 ## 🛣️ Roadmap
 
 - [ ] Run Red and Blue end to end on the local models
-- [ ] OpenShell / NemoClaw integration once installed
+- [x] OpenShell sandbox backend for the verify gate (NemoClaw: not yet)
 - [x] Slack Socket Mode with interactive "Approve fix" / "Reject" buttons (records a signed-off commit; no PR is opened)
 - [ ] More CVEs (Langflow code execution, other excessive-agency cases)
-- [ ] Watchdog loop: poll feeds overnight, triage, and auto-run
+- [x] Watchdog loop: `wreckless daemon` polls feeds (live mode), queues matches, auto-runs them
 
 <!-- PLACEHOLDER: team photo at the hackathon -->
 <div align="center">
