@@ -38,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     common(d)
     d.add_argument("--purple-interval", type=float, default=600)
     d.add_argument("--no-hunt", action="store_true")
+    d.add_argument("--slack-listener", action="store_true",
+                   help="serve the card's Approve/Reject buttons (Socket Mode; needs SLACK_APPROVERS)")
 
     st = sub.add_parser("status", help="queue summary")
     st.add_argument("--home", type=Path, default=RUNS / "swarm")
@@ -59,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         ui.banner(f"WreckLess · {a.cve} · {a.mode} mode{' · demo' if a.demo_mode else ''}")
         ui.say("core", f"home {swarm.home} · enclave: {Enclave(swarm.home, sys.executable).backend}")
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
-    swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt)
+    swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener)
     return 0
 
 

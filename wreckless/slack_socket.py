@@ -177,16 +177,16 @@ def _enabled() -> tuple[bool, str]:
     return True, "enabled"
 
 
-def _build_handler(on_approve, on_reject):
+def _build_handler(on_approve, on_reject, runs_dir: Path = ITEMS):
     from slack_bolt import App
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     app = App(token=os.environ["SLACK_BOT_TOKEN"])
-    register(app, make_handlers(on_approve, on_reject))
+    register(app, make_handlers(on_approve, on_reject, runs_dir))
     return SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
 
 
-def start_listener(on_approve: Decision | None = None,
-                   on_reject: Decision | None = None) -> ListenerHandle | None:
+def start_listener(on_approve: Decision | None = None, on_reject: Decision | None = None,
+                   runs_dir: Path = ITEMS) -> ListenerHandle | None:
     """Start the listener in a daemon thread. Never raises, never blocks the pipeline."""
     try:
         ok, why = _enabled()
@@ -197,7 +197,7 @@ def start_listener(on_approve: Decision | None = None,
 
         def run() -> None:
             try:
-                handle.handler = _build_handler(on_approve, on_reject)
+                handle.handler = _build_handler(on_approve, on_reject, runs_dir)
                 handle.handler.start()  # blocking inside this daemon thread only
             except Exception as e:  # noqa: BLE001
                 _log(f"listener stopped: {e}")

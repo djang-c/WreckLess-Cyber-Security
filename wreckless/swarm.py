@@ -166,7 +166,15 @@ class Swarm:
                 ui.say("core", f"{item_id} crashed: {type(e).__name__}: {e}")
                 self.queue.fail(item_id, "core", f"crashed: {type(e).__name__}: {e}"[:300])
 
-    def run_daemon(self, purple_interval: float, hunt: bool) -> None:
+    def liveness(self) -> str:
+        st, up = self.queue.stats(), int(time.time() - self.started)
+        by = st["by_label"]
+        return (f"up {up // 3600}h{up % 3600 // 60:02d}m · {st['total']} candidates · "
+                f"{by.get('VERIFIED', 0)} verified · {by.get('REJECTED', 0)} rejected · "
+                f"{st['by_state'].get('notified', 0)} PRs drafted")
+
+    def run_daemon(self, purple_interval: float, hunt: bool, slack_listener: bool = False,
+                   heartbeat: float = 30) -> None:
         ui.banner(f"WreckLess always-on swarm · {self.s.mode} mode · home {self.home}")
         for item_id in self.queue.recover():
             ui.say("core", f"{item_id} was interrupted by a restart → failed")
@@ -176,9 +184,16 @@ class Swarm:
             threads.append(threading.Thread(target=self.red_hunt_loop, daemon=True))
         for t in threads:
             t.start()
+        listener = None
+        if slack_listener:
+            from wreckless.slack_socket import start_listener
+            listener = start_listener(runs_dir=self.home / "items")
         try:
-            while True:
-                time.sleep(1)
+            while not self.stop.wait(heartbeat):
+                ui.say("core", self.liveness())
         except KeyboardInterrupt:
             self.stop.set()
-            ui.say("core", f"stopping · {self.queue.stats()}")
+            ui.say("core", f"stopping · {self.liveness()}")
+        finally:
+            if listener:
+                listener.stop()
