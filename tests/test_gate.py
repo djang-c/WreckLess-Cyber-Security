@@ -73,7 +73,8 @@ def test_forged_provenance_decoy_rejected(tmp_path, with_ref):
     script.write_text(FORGE)
     v = gate.verify(script, victim, enclave, reference_patch=_ref("CVE-2024-21513") if with_ref else None)
     assert not v.verified
-    assert "control" in v.reason
+    # the guard now stops the forgery itself (prov write blocked); the control is the backstop
+    assert any(w in v.reason for w in ("control", "guard", "itself")), v.reason
 
 
 def test_unappliable_reference_patch_falls_back_to_null_control(tmp_path):
