@@ -619,6 +619,13 @@ def _owner(pid: int | None = None) -> str | None:
     try:
         return f"{pid}-{Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]}"
     except (OSError, IndexError):
+        pass
+    try:  # macOS has no /proc: start time (epoch s) from ps
+        import time
+        s = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                           env={**os.environ, "LC_ALL": "C"}, timeout=5).stdout.strip()
+        return f"{pid}-{int(time.mktime(time.strptime(s, '%a %b %d %H:%M:%S %Y')))}"
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
 
