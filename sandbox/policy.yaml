@@ -1,0 +1,21 @@
+# OpenShell sandbox policy for WreckLess enclaves: the gateway's default policy plus /dev/shm.
+# /dev/shm (64 MiB tmpfs, nosuid,nodev,noexec) is needed by multiprocessing semaphores, which the
+# real upstream PALChain uses (PythonREPL runs generated code in a subprocess with a timeout).
+# No network section: all egress stays denied (tests/test_pipeline.py proves it).
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /tmp
+    - /dev/null
+    - /dev/shm
+landlock:
+  compatibility: best_effort

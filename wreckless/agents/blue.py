@@ -14,6 +14,7 @@ from wreckless import llm, ui
 from wreckless.config import BENCHMARKS, Settings
 from wreckless.gitops import git
 from wreckless.sandbox import Enclave
+from wreckless.targets import Target, default as default_target
 
 SYSTEM = """You are Hard Hat, a defensive engineer. You receive a verified vulnerability report
 with a working exploit. Fix the root cause in the victim repo with a minimal patch that keeps
@@ -235,7 +236,7 @@ def _junit(xml: str | None) -> tuple[set[str], int, int]:
     return names, passed, failed
 
 
-def _held_out(enclave: Enclave, wt: Path, test: Path) -> HeldOut:
+def _held_out(enclave: Enclave, wt: Path, test: Path, adapter: Path | None = None) -> HeldOut:
     """Run a pristine copy of a held-out test from its own rootdir: no victim conftest, no
     victim ini, no plugin autoload. Pass/fail is read by the host from exit code + junit."""
     run = enclave.root / "tmp" / f"heldout-{secrets.token_hex(6)}"
@@ -244,6 +245,8 @@ def _held_out(enclave: Enclave, wt: Path, test: Path) -> HeldOut:
         (run / "pytest.ini").write_text("[pytest]\n")
         probe = run / f"test_heldout_{test.stem}.py"
         shutil.copy(test, probe)
+        # how this target is driven (make_db / run_pal / module names); imported as wl_target
+        shutil.copy(adapter or default_target().adapter, run / "wl_target.py")
         junit = run / "junit.xml"
         r = enclave.run([enclave.python, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--noconftest",
                          "-c", str(run / "pytest.ini"), "--rootdir", str(run), "--confcutdir", str(run),
@@ -261,29 +264,30 @@ def _held_out(enclave: Enclave, wt: Path, test: Path) -> HeldOut:
         shutil.rmtree(run, ignore_errors=True)
 
 
-def validate(wt: Path, enclave: Enclave, report: dict) -> Validation:
+def validate(wt: Path, enclave: Enclave, report: dict, target: Target | None = None) -> Validation:
     """Final checks, run by the orchestrator (never by Blue): held-out tests + exploit + functional."""
-    bench = BENCHMARKS / report["cve"] if report.get("cve") else None
-    gating = [bench / f for f in GATING if (bench / f).exists()] if bench else []
-    reported = [bench / f for f in REPORTED if (bench / f).exists()] if bench else []
+    target = target or default_target()
+    gating = [t for t in (target.heldout(report.get("cve"), f) for f in GATING) if t]
+    reported = [t for t in (target.heldout(report.get("cve"), f) for f in REPORTED) if t]
     base = report.get("commit") or "HEAD"
     bad = _patch_violations(wt, base)
     if bad:
         reason = "; ".join(bad)
         return Validation(False if gating else None, False, False, rejected=reason, logs={"rejected": reason})
     # Belt and braces: the functional run always uses the victim's own tests from git.
-    git(wt, "checkout", "-q", base, "--", "tests")
-    git(wt, "clean", "-fdxq", "--", "tests")
+    tests_root = Path(target.functional_tests).parts[0]
+    git(wt, "checkout", "-q", base, "--", tests_root)
+    git(wt, "clean", "-fdxq", "--", tests_root)
 
     logs, regression, hardening = {}, None, None
     for t in gating:
-        r = _held_out(enclave, wt, t)
+        r = _held_out(enclave, wt, t, target.adapter)
         logs[t.stem] = r.output
         regression = (regression is not False) and r.returncode == 0
     for t in reported:
-        r = _held_out(enclave, wt, t)
+        r = _held_out(enclave, wt, t, target.adapter)
         hardening, logs[t.stem] = f"{r.passed}/{r.passed + r.failed}", r.output
-    fun = _pytest(enclave, wt, "tests")
+    fun = _pytest(enclave, wt, target.functional_tests)
     exp = enclave.run_exploit(Path(report["repro_script"]), wt)
     logs |= {"functional": fun.output, "exploit": exp.output}
     # Host-side verdict: the nonce is not in the oracle file AND the exploit process itself
@@ -292,7 +296,8 @@ def validate(wt: Path, enclave: Enclave, report: dict) -> Validation:
     return Validation(regression, fun.returncode == 0, blocked, hardening, logs)
 
 
-def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings) -> tuple[str, str]:
+def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings,
+           target: Target | None = None) -> tuple[str, str]:
     tools = BlueTools(wt, enclave, report, item_dir)
     ep = s.blue if llm.reachable(s.blue) else s.blue_fallback
     if s.use_llm and llm.reachable(ep):
@@ -309,8 +314,9 @@ def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings
         if not s.demo_mode:
             return "", "llm"
 
-    known = BENCHMARKS / str(report.get("cve")) / "known_good" / "fix.patch"
-    if not known.exists():
+    bench = (target or default_target()).bench(report.get("cve"))
+    known = bench / "known_good" / "fix.patch" if bench else None
+    if not known or not known.exists():
         return "", "none"
     why = ("" if not s.use_llm else " (demo-mode fallback)" if llm.reachable(ep)
            else f" (LLM unreachable at {ep.url})")

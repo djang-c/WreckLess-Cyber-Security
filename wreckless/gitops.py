@@ -10,7 +10,9 @@ def git(cwd: Path, *args: str) -> str:
 
 
 def init_victim(template: Path, dest: Path) -> str:
-    shutil.copytree(template, dest)
+    # target metadata (incl. the held-out adapter) is ours, not part of the victim's repo
+    shutil.copytree(template, dest, ignore=shutil.ignore_patterns(
+        "target.json", "heldout_adapter.py", "inventory.json", "__pycache__", ".git"))
     git(dest, "init", "-q", "-b", "main")
     git(dest, "-c", "user.name=victim", "-c", "user.email=victim@local", "add", "-A")
     git(dest, "-c", "user.name=victim", "-c", "user.email=victim@local",

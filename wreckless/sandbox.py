@@ -136,7 +136,7 @@ class Enclave:
     Override with WRECKLESS_SANDBOX.
     """
 
-    def __init__(self, root: Path, python: str, backend: str | None = None):
+    def __init__(self, root: Path, python: str, backend: str | None = None, image: str | None = None):
         self.root = root.resolve()
         self.python = python
         self.guard_dir = self.root / ".enclave"
@@ -146,7 +146,7 @@ class Enclave:
         (self.root / "tmp" / ".keep").touch()  # empty dirs may not survive an upload
         want = backend or os.environ.get("WRECKLESS_SANDBOX", "auto")
         if want == "openshell" or (want == "auto" and openshell_available()):
-            self.impl = _OpenShell(self.root)
+            self.impl = _OpenShell(self.root, image or SANDBOX_IMAGE)
         else:
             self.impl = _Userland(self.root, python)
         self.backend = self.impl.name
@@ -229,6 +229,7 @@ class _Userland:
 
 
 SANDBOX_IMAGE = os.environ.get("WRECKLESS_SANDBOX_IMAGE", "wreckless-sandbox:py312")
+SANDBOX_POLICY = Path(__file__).resolve().parent.parent / "sandbox" / "policy.yaml"
 
 
 def openshell_available() -> bool:
@@ -245,9 +246,9 @@ class _OpenShell:
     name = "openshell"
     python = "python3"
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, image: str = SANDBOX_IMAGE):
         import hashlib
-        self.root = root
+        self.root, self.image = root, image
         self.remote = f"/sandbox/w/{root.name}"
         self.sandbox = "wl-" + hashlib.sha1(str(root).encode()).hexdigest()[:12]
         self.created = False
@@ -259,7 +260,7 @@ class _OpenShell:
         if self.created:
             return
         if self._cli("get", self.sandbox, timeout=30).returncode != 0:
-            r = self._cli("create", "--name", self.sandbox, "--from", SANDBOX_IMAGE, "--no-tty",
+            r = self._cli("create", "--name", self.sandbox, "--from", self.image, "--no-tty", "--policy", str(SANDBOX_POLICY),
                           "--no-auto-providers", "--detach", "--label", "app=wreckless")
             if r.returncode != 0:
                 raise RuntimeError(f"openshell create failed: {r.stderr or r.stdout}")

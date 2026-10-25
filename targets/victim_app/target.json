@@ -1,0 +1,9 @@
+{
+  "description": "Minimal vendored reproduction of the two langchain-experimental sinks (fast, no deps).",
+  "source": ".",
+  "python": "host",
+  "functional_tests": "tests",
+  "benchmarks": "",
+  "inventory": "inventory.json",
+  "image": "wreckless-sandbox:py312"
+}

@@ -1,0 +1,5 @@
+{
+  "_comment": "libs/experimental/pyproject.toml at ce61840e says 0.0.17.",
+  "ecosystem": "PyPI",
+  "packages": {"langchain-experimental": "0.0.17"}
+}

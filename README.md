@@ -121,6 +121,24 @@ sequenceDiagram
 
 Plain data such as `[0.12, 0.88]` still parses; code never runs.
 
+### 🎯 Real upstream target, not just a reproduction
+
+`--target langchain` attacks **the actual LangChain code** at the vulnerable commit instead of the
+minimal `targets/victim_app` reproduction. `scripts/fetch_target.sh` does a sparse, shallow clone
+(about 700 KB, 3 s) of `libs/experimental` at **`ce61840e`** (2023-09-18), which has both bugs.
+Upstream's own unit tests (28 pass, 15 skip at that commit) are the functional suite Blue must keep green.
+
+| | `victim_app` (default) | `langchain` |
+|---|---|---|
+| Code | Minimal vendored sinks | Real `langchain_experimental` @ `ce61840e` |
+| Runtime | Host Python | `langchain==0.0.292` (`.venv-target`, image `wreckless-sandbox:langchain-0.0.292`) |
+| Functional tests | `tests/` | Upstream `tests/unit_tests` |
+| Both CVEs, `--no-llm` | 3/3 ALL PASS | 3/3 ALL PASS (userland and OpenShell) |
+
+Why that commit: the next change to `vector_sql.py` (`12ff7800`) imported `langchain.schema.base`,
+which no langchain release ever shipped. From then until the fix, **including the 0.0.20 PyPI wheel**,
+the vulnerable module could not even be imported. `ce61840e` is the last commit where the bug is reachable.
+
 ---
 
 ## 🖥️ What you see on stage
@@ -202,6 +220,7 @@ scripts/serve_models.sh               # 3 vLLM servers, biggest first
 | `--demo-mode` | One pass at temperature 0; falls back to the cached exploit or patch so there is no dead air on stage |
 | `--agentic` | Exploit goes through the victim LLM via prompt injection (full chain) |
 | `--no-llm` | Scripted run with no models; used for CI and dev laptops |
+| `--target langchain` | Attack the real upstream code at the vulnerable commit (run `scripts/fetch_target.sh` first) |
 
 ### Slack (optional)
 
@@ -262,7 +281,8 @@ runs/CVE-2024-21513-<timestamp>/
 ## ⚠️ Honest limitations
 
 - **Sandbox:** exploits run in **OpenShell** sandboxes (kernel-enforced deny-all egress, read-only root; a test proves this holds even with our Python guard disabled). Without a running gateway, WreckLess falls back to a Python-level guard, which is **not** kernel isolation. `--agentic` mode needs an OpenShell policy that allows the sandbox to reach the victim LLM; until then it only works on the fallback guard. The fallback guard is a userland audit hook: `os.system`/subprocess children escape it.
-- **Two CVEs so far** (CVE-2024-21513, CVE-2023-44467). The pipeline is generic (`benchmarks/<CVE>/`).
+- **Two CVEs so far** (CVE-2024-21513, CVE-2023-44467), on two targets (minimal reproduction and real upstream). The pipeline is generic (`benchmarks/<CVE>/`, `targets/<name>/target.json`).
+- **Upstream static checks are narrower:** on the real target, the CVE-2024-21513 static check scans `vector_sql.py` itself, not its transitive imports (the real package legitimately imports `importlib`).
 - **Held-out tests run in-process with the patched code.** Conftest/ini/plugin injection is blocked and pass/fail is read from exit code + junit, but deliberately adversarial victim code could still tamper with the pytest process. The static checks (`static_test.py`) never import victim code, so they cannot be tampered with that way.
 - **Reference fix gap (CVE-2023-44467):** the cached reference patch scores 3/4 on the non-gating hardening probes; `getattr_strings` (no dunder identifiers) still escapes it.
 - **`--demo-mode` fallbacks are labelled.** If the LLM misses and the cached exploit or patch is used, the report says `"source": "fallback"` and the terminal and Slack card say **CACHED REFERENCE PATCH — not AI-generated**.

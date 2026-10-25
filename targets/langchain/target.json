@@ -1,0 +1,10 @@
+{
+  "description": "Real upstream langchain-experimental at ce61840e (2023-09-18), vulnerable to CVE-2024-21513 and CVE-2023-44467. Fetched by scripts/fetch_target.sh; runs on langchain==0.0.292.",
+  "source": "../upstream/langchain/libs/experimental",
+  "fetch": "scripts/fetch_target.sh",
+  "python": ".venv-target/bin/python",
+  "functional_tests": "tests/unit_tests",
+  "benchmarks": "upstream",
+  "inventory": "inventory.json",
+  "image": "wreckless-sandbox:langchain-0.0.292"
+}

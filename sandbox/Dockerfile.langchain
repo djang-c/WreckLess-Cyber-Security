@@ -1,0 +1,5 @@
+# Enclave image for the real upstream target (targets/langchain): its runtime deps, nothing else.
+# langchain 0.0.292 is the newest release the vulnerable commit (ce61840e) still imports against.
+# Build: sg docker -c "docker build -f sandbox/Dockerfile.langchain -t wreckless-sandbox:langchain-0.0.292 sandbox/"
+FROM wreckless-sandbox:py312
+RUN pip install --no-cache-dir "langchain==0.0.292" jinja2 && rm -rf /root/.cache

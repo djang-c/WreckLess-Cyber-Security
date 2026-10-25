@@ -12,6 +12,9 @@ if id -nG | grep -qw docker; then D() { "$@"; }; else D() { sg docker -c "$*"; }
 
 D docker image inspect wreckless-sandbox:py312 >/dev/null 2>&1 \
   || D docker build -q -t wreckless-sandbox:py312 sandbox/
+# real upstream target (scripts/fetch_target.sh): same base + langchain 0.0.292
+D docker image inspect wreckless-sandbox:langchain-0.0.292 >/dev/null 2>&1 \
+  || D docker build -q -f sandbox/Dockerfile.langchain -t wreckless-sandbox:langchain-0.0.292 sandbox/
 
 if openshell status 2>/dev/null | grep -q Connected; then
   echo "gateway already connected"; exit 0

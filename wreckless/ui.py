@@ -237,7 +237,7 @@ def scoreboard(regression, functional, exploit_blocked, hardening: str | None = 
         _emit("blue", "scoreboard", regression=regression, functional=functional,
               exploit_blocked=exploit_blocked, hardening=hardening)
     checks = [("held-out regression (WreckLess)", regression, True),
-              ("functional test suite (victim app)", functional, False),
+              ("functional test suite (target repo)", functional, False),
               ("exploit replay blocked", exploit_blocked, False)]
     counted = [(name, v) for name, v, optional in checks if not (optional and v is None)]
     ok = all(v is True for _, v in counted)

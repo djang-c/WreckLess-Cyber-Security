@@ -2,7 +2,6 @@
 one verify gate -> Blue -> validation -> notify. Each item walks its own lifecycle."""
 import json
 import os
-import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -12,7 +11,8 @@ from wreckless import gate, ui
 from wreckless import feeds
 from wreckless.agents import blue, purple, red
 from wreckless.candidates import CandidateQueue
-from wreckless.config import BENCHMARKS, INTEL_DB, INVENTORY, TARGETS, Settings
+from wreckless import targets
+from wreckless.config import BENCHMARKS, INTEL_DB, Settings
 from wreckless.events import EventLog
 from wreckless.kb import IntelDB
 from wreckless.gitops import commit_all, init_victim, worktree
@@ -31,6 +31,8 @@ class Swarm:
         self.stop = threading.Event()
         self.started = time.time()
         self.intel = IntelDB(INTEL_DB)
+        self.target = targets.load(s.target)
+        self.target.ensure()
 
     def hero_active(self) -> bool:
         """A hero run is in flight here or in another process sharing this home."""
@@ -54,11 +56,14 @@ class Swarm:
             self.hero_file.unlink(missing_ok=True)
             self.hero.clear()
 
+    def _enclave(self, d: Path) -> Enclave:
+        return Enclave(d, self.target.python, image=self.target.image)
+
     # ---------- producers ----------
     def submit_cve(self, cve: str) -> str:
         self.events.item.id = None
         ui.mascot("purple")
-        intel = purple.ingest(cve, self.s, self.intel, TARGETS / "victim_app")
+        intel = purple.ingest(cve, self.s, self.intel, self.target.source)
         item_id = self.queue.enqueue("purple", intel["summary"], cve=cve, payload={"intel": intel})
         ui.say("purple", f"{item_id} queued as \033[1mPREDICTION\033[0m")
         return item_id
@@ -66,7 +71,7 @@ class Swarm:
     def purple_loop(self, interval: float) -> None:
         """Scheduled: poll the feeds (live mode), then queue every benchmark bundle and every
         inventory-matched advisory not yet in the queue (KEV first, then severity)."""
-        inv = feeds.load_inventory(INVENTORY)
+        inv = feeds.load_inventory(self.target.inventory)
         while not self.stop.is_set():
             if self.hero_active():          # the hero beat owns the GPU; poll again shortly
                 self.stop.wait(5)
@@ -94,8 +99,8 @@ class Swarm:
             d = self.home / "hunts" / f"pass-{n:04d}"
             d.mkdir(parents=True, exist_ok=True)
             wt = d / "victim"
-            init_victim(TARGETS / "victim_app", wt)
-            enclave = Enclave(d, sys.executable)
+            init_victim(self.target.source, wt)
+            enclave = self._enclave(d)
             try:
                 prop = red.hunt(wt, enclave, d, self.s)
             finally:
@@ -117,7 +122,7 @@ class Swarm:
             return "skipped"  # another worker or process claimed it first
         d = self.home / "items" / item_id.replace("#", "-")
         d.mkdir(parents=True, exist_ok=True)
-        enclave = Enclave(d, sys.executable)
+        enclave = self._enclave(d)
         try:
             return self._process(item_id, d, enclave)
         finally:
@@ -126,14 +131,14 @@ class Swarm:
     def _process(self, item_id: str, d: Path, enclave: Enclave) -> str:
         item = self.queue.get(item_id)
         src = d / "victim-src"
-        commit = init_victim(TARGETS / "victim_app", src)
+        commit = init_victim(self.target.source, src)
         t0 = time.time()
 
         # verifying: Red proposes (if needed), the gate disposes
         red_wt = worktree(src, d / "wt-red", f"red/{item_id.replace('#', '-')}")
         ui.mascot("red")
         if item.source == "purple":
-            prop = red.attack(item.payload["intel"], red_wt, enclave, d, self.s)
+            prop = red.attack(item.payload["intel"], red_wt, enclave, d, self.s, self.target)
             script, source = (prop.script, prop.source) if prop else (None, None)
         else:
             script, source = Path(item.payload["script"]), "llm"
@@ -171,10 +176,10 @@ class Swarm:
         ui.mascot("blue")
         branch = f"wreckless/fix-{item_id.replace('#', '-')}"
         blue_wt = worktree(src, d / "wt-blue", branch)
-        diff, patch_source = blue.defend(report, blue_wt, enclave, d, self.s)
+        diff, patch_source = blue.defend(report, blue_wt, enclave, d, self.s, self.target)
         (d / "fix.patch").write_text(diff)
         ui.diff("blue", diff or "(no diff)", limit=1500)
-        v = blue.validate(blue_wt, enclave, report)
+        v = blue.validate(blue_wt, enclave, report, self.target)
         ui.scoreboard(v.regression, v.functional, v.exploit_blocked, v.hardening)
         (d / "validation.json").write_text(json.dumps(v.logs, indent=2))
         if not diff or not v.ok:

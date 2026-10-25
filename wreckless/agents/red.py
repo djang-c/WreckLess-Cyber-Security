@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wreckless import llm, ui
-from wreckless.config import BENCHMARKS, Settings
+from wreckless.config import Settings
 from wreckless.gitops import git
 from wreckless.sandbox import Enclave
+from wreckless.targets import Target, default as default_target
 
 CONTRACT = """Script contract (mandatory):
 - invoked as: python repro_exploit.py <victim_repo_path> [--agentic]
@@ -94,7 +95,8 @@ def _victim_env(s: Settings) -> dict:
     return {"VICTIM_LLM_URL": s.victim.url, "VICTIM_LLM_MODEL": s.victim.model} if s.agentic_exploit else {}
 
 
-def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Settings) -> Proposal | None:
+def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Settings,
+           target: Target | None = None) -> Proposal | None:
     tools = RedTools(worktree, enclave, out_dir, s)
     script = out_dir / "repro_exploit.py"
     if s.use_llm and llm.reachable(s.red):
@@ -113,8 +115,9 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
         if not s.demo_mode:
             return Proposal(script, "llm") if script.exists() else None
 
-    known = BENCHMARKS / intel["id"] / "known_good" / "repro_exploit.py"
-    if not known.exists():
+    bench = (target or default_target()).bench(intel["id"])
+    known = bench / "known_good" / "repro_exploit.py" if bench else None
+    if not known or not known.exists():
         return None
     why = ("" if not s.use_llm else " (demo-mode fallback)" if llm.reachable(s.red)
            else f" (LLM unreachable at {s.red.url})")

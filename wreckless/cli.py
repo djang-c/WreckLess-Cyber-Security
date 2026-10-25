@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from wreckless import ui
+from wreckless import targets
 from wreckless.config import RUNS, Settings
 from wreckless.events import replay
 from wreckless.sandbox import openshell_available
@@ -13,7 +14,7 @@ from wreckless.swarm import Swarm
 
 def _settings(a) -> Settings:
     s = Settings(mode=a.mode, demo_mode=a.demo_mode, use_llm=not a.no_llm,
-                 agentic_exploit=getattr(a, "agentic", False))
+                 agentic_exploit=getattr(a, "agentic", False), target=a.target)
     if a.demo_mode:
         s.max_agent_steps = 8
     return s
@@ -28,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--mode", choices=["airgap", "live"], default="airgap")
         p.add_argument("--demo-mode", action="store_true", help="N=1, temp 0, cached fallback")
         p.add_argument("--no-llm", action="store_true", help="scripted run with cached exploit/patch")
+        p.add_argument("--target", choices=targets.names(), default="victim_app",
+                       help="victim_app (minimal repro) | langchain (real upstream @ vulnerable commit)")
 
     r = sub.add_parser("run", help="walk one CVE through the pipeline (demo critical path)")
     common(r)
@@ -57,10 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     it.add_argument("action", choices=["sync", "list", "search", "show"])
     it.add_argument("query", nargs="?", help="search text, or the CVE/GHSA id for show")
     it.add_argument("--feeds", default="osv,github,kev", help="comma list for sync")
+    it.add_argument("--target", choices=targets.names(), default="victim_app", help="whose inventory to sync")
 
     a = ap.parse_args(argv)
     if a.cmd == "intel":
-        return _intel(a.action, a.query, tuple(a.feeds.split(",")))
+        return _intel(a.action, a.query, tuple(a.feeds.split(",")), a.target)
     if a.cmd == "metrics":
         return _metrics(a.watch, a.json)
     if a.cmd == "replay":
@@ -73,19 +77,19 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "run":
         ui.banner(f"WreckLess · {a.cve} · {a.mode} mode{' · demo' if a.demo_mode else ''}")
         backend = "openshell" if openshell_available() else "userland-guard"
-        ui.say("core", f"home {swarm.home} · enclave: {backend}")
+        ui.say("core", f"home {swarm.home} · target: {swarm.target.name} · enclave: {backend}")
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
     swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener)
     return 0
 
 
-def _intel(action: str, query: str | None, which: tuple) -> int:
+def _intel(action: str, query: str | None, which: tuple, target: str) -> int:
     from wreckless import feeds
-    from wreckless.config import INTEL_DB, INVENTORY
+    from wreckless.config import INTEL_DB
     from wreckless.kb import IntelDB
     db = IntelDB(INTEL_DB)
     if action == "sync":   # the one command that needs the network: run it before an airgapped demo
-        inv = feeds.load_inventory(INVENTORY)
+        inv = feeds.load_inventory(targets.load(target).inventory)
         rep = feeds.sync(db, inv, Settings(mode="live"), which)
         ui.say("purple", "feeds: " + rep.line())
         for k in rep.new:

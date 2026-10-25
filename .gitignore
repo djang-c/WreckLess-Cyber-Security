@@ -8,3 +8,4 @@ __pycache__/
 .env
 *.egg-info/
 .claude/worktrees/
+targets/upstream/
