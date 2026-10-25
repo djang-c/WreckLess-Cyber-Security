@@ -290,7 +290,7 @@ class Swarm:
         by = st["by_label"]
         return (f"up {up // 3600}h{up % 3600 // 60:02d}m · {st['total']} candidates · "
                 f"{by.get('VERIFIED', 0)} verified · {by.get('REJECTED', 0)} rejected · "
-                f"{st['by_state'].get('notified', 0)} PRs drafted")
+                f"{st['by_state'].get('notified', 0)} fix cards sent")
 
     def run_daemon(self, purple_interval: float, hunt: bool, slack_listener: bool = False,
                    heartbeat: float = 30) -> None:

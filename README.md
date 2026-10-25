@@ -335,7 +335,8 @@ runs/swarm/                         # --home
 
 - [ ] Run Red and Blue end to end on the local models
 - [x] OpenShell sandbox backend for the verify gate (NemoClaw: not yet)
-- [x] Slack Socket Mode with interactive "Approve fix" / "Reject" buttons (records a signed-off commit; no PR is opened)
+- [x] Slack Socket Mode with interactive "Approve fix" / "Reject" buttons (records the signed-off commit; with `WRECKLESS_GITHUB_REPO` set, Approve pushes it and opens a draft PR)
+- [x] 24/7: `scripts/install_services.sh` (systemd: models, daemon + Slack listener, optional airgap at boot); every outcome posts a card
 - [ ] More CVEs (Langflow code execution, other excessive-agency cases)
 - [x] Watchdog loop: `wreckless daemon` polls feeds (live mode), queues matches, auto-runs them
 

@@ -15,7 +15,7 @@ Scope for running the WreckLess agentic security swarm on the Dell Pro Max / NVI
 | 3 | **Models exist and are quantized** (team's call). | Pin the exact HF repo for each and confirm the quant is Marlin-loadable on sm_121 (AWQ-INT4 ideal; GPTQ-Int4 also works via Marlin; avoid NVFP4). |
 | 4 | **Airgap fixed:** block only the cloud-LLM egress, keep Slack alive. | Test the rule doesn't drop local vLLM or the Slack socket. |
 | 5 | **Architecture: always-on swarm, deterministic demo.** Scheduled Purple + continuous Red both produce candidates into one queue; a single sandbox verify gate promotes only exploit-confirmed items to Blue. The demo walks one pre-verified CVE; continuous Red is background liveness, throttled during the hero beat. | Keep all hunt output labelled PREDICTION; never put live discovery in the critical path. |
-| 6 | **No draft PR (decided 2026-10-25).** The pipeline ends at a local fix branch + signed-off commit: Slack "Approve fix" records `decision.json` for that exact commit. On stage: "in production, Approve is where the PR opens." The patched code is our minimal replica, not upstream LangChain, so a real PR would target a demo repo and add a GitHub dependency on stage. | Never say "PR" or "Draft PR" in the terminal, card or pitch. |
+| 6 | **Approve opens a draft PR (2026-10-25; reverses the same-day "no draft PR").** WreckLess runs 24/7 and is reviewed remotely in Slack, so Approve must lead somewhere. Nothing is pushed before the click; Approve pushes exactly the approved commit to a dedicated demo repo (`WRECKLESS_GITHUB_REPO`) and opens a draft PR, linked on the card. Unset = local sign-off only (stage fallback if GitHub is unreachable). | Say "draft PR" only when the card shows its link; merge stays human. |
 
 ---
 
@@ -129,7 +129,7 @@ Two parallel tracks meeting at two shared contracts, defined day one: the OpenAI
 
 - NemoClaw orchestrator: the candidate **queue**, the per-item **state lifecycle**, and the **verify gate** (runs Red's exploit-as-test in the sandbox, reads the oracle, promotes PREDICTION → VERIFIED). The `vulnerability_report.json` handoff.
 - Blue: AST patch generation; wrap Red's exploit as a pytest and re-run it on the patch + re-run the victim replica's WreckLess-written functional tests → "exploit blocked + no regressions"; render Blue's diff beside the maintainer's fix `7b13292e`.
-- `airgap_lockdown.sh` (decision 4) + Slack Socket Mode bridge; card ends with "Fix branch ready (local, pending review)" + Approve fix / Reject (no PR is opened; decision 6) + per-agent audit trail.
+- `airgap_lockdown.sh` (decision 4) + Slack Socket Mode bridge; card ends with "Fix branch ready (local, pending review)" + Approve fix / Reject (Approve opens a draft PR; decision 6) + per-agent audit trail.
 - Terminal mascots/ANSI UI incl. the GB10 memory panel (3 models resident, ~110B in 128 GB) + live tokens/sec per port; the 4-minute `--demo-mode` (N=1) script with per-state timeouts, one retry, honest-failure, and a pre-recorded fallback replayed from `events.jsonl`.
 
 Balanced: A carries the front-loaded infra risk; B carries the two heaviest logic pieces (the queue/gate/state machine + the Blue hero proof) plus the demo polish. Both halves develop on MacBooks against the shared endpoint; only Person A needs real GB10 silicon early.
@@ -215,7 +215,7 @@ The ~4-minute run — **one pre-verified item in the critical path; continuous R
 2. Purple retrieves the CVE advisory from the local intel cache (offline).
 3. The item enters the queue as a PREDICTION; the verify gate runs the exploit-as-test in the OpenShell sandbox — it fires on the vulnerable commit. Terminal turns red, Slack fires the intrusion trace. Now VERIFIED.
 4. Blue generates the AST patch; the exploit-as-test is re-run and is now **blocked**, and the victim replica's WreckLess-written functional tests still **pass** — "exploit blocked + no regressions." Blue's diff is shown beside the maintainer's fix `7b13292e`.
-5. Slack card flips to "Fix branch ready (local, pending review)"; a listed approver clicks **Approve fix**, which records the signed-off commit (no PR; decision 6).
+5. Slack card flips to "Fix branch ready (local, pending review)"; a listed approver clicks **Approve fix**, which records the signed-off commit and opens the draft PR (decision 6).
 6. Background panel shows the always-on proof: "Red up 6 h · 14 candidates · 3 verified," and a 2nd CVE runs through the same pipeline untouched (generality).
 
 **Safety nets:** every state has a timeout and a degrade path; if the patch fails under `--demo-mode` it retries once, then shows the failure honestly; a pre-recorded run replays from `events.jsonl` with the same UI if the box misbehaves.

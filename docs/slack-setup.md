@@ -8,9 +8,10 @@ WreckLess posts **one evolving run card** per run (`wreckless/notify.py`): first
 Socket Mode is outbound-only (wss to `*.slack.com`), so no public URL is needed and it
 survives `airgap_lockdown.sh` (which blocks only cloud-LLM egress).
 
-Approving does **not** push, merge or call GitHub. The default callback writes
-`runs/swarm/items/<item>/decision.json` with the exact commit approved (first click wins; only
-users in `SLACK_APPROVERS` can decide); merging is a human step.
+Approving first writes `runs/swarm/items/<item>/decision.json` with the exact commit approved (first
+click wins; only users in `SLACK_APPROVERS` can decide). If `WRECKLESS_GITHUB_REPO` is set, it then
+pushes that commit and opens a **draft PR** in the demo repo, and the card shows the PR link (section 6).
+Nothing leaves the box before the click; Reject never pushes; merging is a human step on GitHub.
 
 ## 1. Create the app (human step)
 
@@ -92,3 +93,43 @@ If `slack_bolt` is missing or either token is unset, `start_listener()` prints o
 
 header plain_text ≤ 150 chars, section text ≤ 3000 chars (code fences re-closed when clipped),
 ≤ 50 blocks, button value ≤ 2000 chars.
+
+
+## 6. GitHub: Approve opens a draft PR (optional)
+
+Without `WRECKLESS_GITHUB_REPO` an approval stays a local sign-off. With it, Approve runs
+`wreckless/publish.py`:
+
+1. It refuses if the fix branch has moved since the card was posted (the approval covers that one commit).
+2. It pushes the vulnerable base as `wreckless/base-<sha12>` and the approved commit as `wreckless/fix-<item>`.
+3. It runs `gh pr create --draft`, then writes `<item>/pr.json` and puts the PR link on the card.
+
+If the push or PR fails, the approval still stands and the card prints the retry command
+(`uv run python -m wreckless.publish <item-id>`).
+
+One-time setup on the box that runs the daemon:
+
+```bash
+gh repo create <you>/wreckless-victim --private      # an empty repo just for fix PRs
+gh auth login && gh auth setup-git                   # git push uses gh's credential
+echo 'export WRECKLESS_GITHUB_REPO=<you>/wreckless-victim' >> .env
+source .env && uv run python -m wreckless.slack_socket --check   # adds the GitHub rows
+```
+
+`airgap_lockdown.sh on` leaves GitHub reachable. `airtight` allows only Slack, so PRs fail there
+(the approval is still recorded; retry after `off`).
+
+## 7. Run 24/7 (GB10)
+
+```bash
+scripts/install_services.sh --dry-run          # print the systemd units, change nothing
+scripts/install_services.sh                    # models at boot + daemon with Slack buttons, auto-restart
+scripts/install_services.sh --with-airgap      # also re-apply the airgap at every boot
+journalctl -u wreckless-daemon -f              # follow
+scripts/install_services.sh --uninstall
+```
+
+The daemon runs as your user (not root) and reads `.env` at start, so tokens never go into a unit file.
+Every outcome posts a card: fix ready (Approve/Reject), patch failed (which check, log tail),
+gate rejected (reason; Red-hunt rejections only with `WRECKLESS_SLACK_REJECTS=all`), crashed.
+Only one Socket Mode listener should run per app, so stop any listener on another machine.

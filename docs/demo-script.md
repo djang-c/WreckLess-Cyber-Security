@@ -51,7 +51,8 @@ picks the newest run of `$CVE` that reached `notified`, never another CVE's run.
    no test), the functional suite, and replays Red's exploit." Read the scoreboard rows.
    PATCH VALIDATED only after `patching → patched`.
 5. **Slack.** "The fix branch and the diff are already in Slack. Approve records a sign-off on
-   that exact commit; in production, that's where the PR opens." If the terminal says
+   that exact commit and opens a draft PR on GitHub." Click Approve live; say "draft PR" only once
+   the card shows its link (no link: GitHub unreachable or `WRECKLESS_GITHUB_REPO` unset; say the approval was recorded). If the terminal says
    `local outbox`, say Slack wasn't reachable and show `logs/slack_outbox.jsonl`.
 
 ## Contingency ladder
