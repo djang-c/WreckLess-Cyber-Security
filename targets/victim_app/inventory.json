@@ -1,0 +1,5 @@
+{
+  "_comment": "Dependency inventory Purple matches advisories against. The victim app vendors langchain-experimental code; 0.0.14 is the release affected by every CVE we model (21513, 44467, and the real-world 27444/38459 that Purple will find on its own).",
+  "ecosystem": "PyPI",
+  "packages": {"langchain-experimental": "0.0.14"}
+}

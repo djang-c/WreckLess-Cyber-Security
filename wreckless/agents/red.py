@@ -99,7 +99,8 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
     script = out_dir / "repro_exploit.py"
     if s.use_llm and llm.reachable(s.red):
         ui.say("red", f"engaging {s.red.model} — crafting exploit for {intel['id']}")
-        task = (f"Advisory:\n{intel['description']}\nAffected file: {intel['affected_file']}\n"
+        affected = intel.get("affected_file", "unknown: find it in the repo")
+        task = (f"Advisory:\n{intel['description'][:4000]}\nAffected file: {affected}\n"
                 f"Entry point: {intel.get('entry_point', 'see affected file')}\n"
                 f"Hypothesis: {intel.get('hypothesis', {})}\n"
                 + ("Exploit must go through victim.assistant.answer (prompt injection into the victim LLM).\n"

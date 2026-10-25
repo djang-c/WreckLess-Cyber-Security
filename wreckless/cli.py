@@ -1,4 +1,4 @@
-"""wreckless run | daemon | status | replay | metrics"""
+"""wreckless run | daemon | status | replay | metrics | intel"""
 import argparse
 import json
 import sys
@@ -53,7 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--watch", type=float, metavar="SECONDS", help="refresh every N seconds")
     m.add_argument("--json", action="store_true", help="one JSON line per sample (for dashboards)")
 
+    it = sub.add_parser("intel", help="Purple's advisory DB: sync feeds, list, search, show")
+    it.add_argument("action", choices=["sync", "list", "search", "show"])
+    it.add_argument("query", nargs="?", help="search text, or the CVE/GHSA id for show")
+    it.add_argument("--feeds", default="osv,github,kev", help="comma list for sync")
+
     a = ap.parse_args(argv)
+    if a.cmd == "intel":
+        return _intel(a.action, a.query, tuple(a.feeds.split(",")))
     if a.cmd == "metrics":
         return _metrics(a.watch, a.json)
     if a.cmd == "replay":
@@ -69,6 +76,31 @@ def main(argv: list[str] | None = None) -> int:
         ui.say("core", f"home {swarm.home} · enclave: {backend}")
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
     swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener)
+    return 0
+
+
+def _intel(action: str, query: str | None, which: tuple) -> int:
+    from wreckless import feeds
+    from wreckless.config import INTEL_DB, INVENTORY
+    from wreckless.kb import IntelDB
+    db = IntelDB(INTEL_DB)
+    if action == "sync":   # the one command that needs the network: run it before an airgapped demo
+        inv = feeds.load_inventory(INVENTORY)
+        rep = feeds.sync(db, inv, Settings(mode="live"), which)
+        ui.say("purple", "feeds: " + rep.line())
+        for k in rep.new:
+            ui.detail("purple", f"new  {k}")
+        action = "list"
+    if action == "show":
+        adv = db.get(query or "")
+        print(json.dumps(adv, indent=2) if adv else f"{query}: not in {INTEL_DB}")
+        return 0 if adv else 1
+    rows = db.search(query) if action == "search" else db.relevant()
+    for r in rows:
+        flag = "KEV " if r["kev"] else "    "
+        print(f"{flag}{r['key']:18} {(r['severity'] or '?'):9} {(r['vulnerable_versions'] or '?'):12} "
+              f"{(r['summary'] or '')[:58]}")
+    print(f"{len(rows)} shown · {db.count()} in {INTEL_DB}")
     return 0
 
 

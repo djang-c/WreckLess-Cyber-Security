@@ -1,6 +1,19 @@
 # Knowledge, Intel Feeds & Learning
 
-_Status: agreed direction, not yet implemented. Revisit after the core scaffold runs on the GB10._
+_Status: **Purple feeds + intel DB are built** (`wreckless/feeds.py`, `wreckless/kb.py`, `wreckless intel …`).
+Red/Blue retrieval and fine-tuning are agreed direction, not yet implemented._
+
+```bash
+uv run wreckless intel sync            # live: OSV + GitHub + CISA KEV → runs/intel.db (run before going airgapped)
+uv run wreckless intel list            # inventory-matched advisories, KEV first, then severity
+uv run wreckless intel search "PALChain __import__"
+uv run wreckless intel show CVE-2024-27444
+```
+
+First real sync for `langchain-experimental==0.0.14` (`targets/victim_app/inventory.json`): OSV and GitHub
+returned 10 entries (GHSA + PYSEC ids for the same bugs) that dedupe to **4 CVEs**: the two benchmarked
+ones (21513, 44467) plus **CVE-2024-27444** (PALChain bypass) and **CVE-2024-38459** (Python REPL),
+which Purple found on its own. In the daemon, Purple queues benchmark bundles first, then feed matches.
 
 ## TL;DR
 
@@ -29,6 +42,7 @@ polling each source with a **since-cursor**. Polls are cheap HTTP; the LLM runs 
 | Upstream commits/issues of watched deps | Fixes landing before a CVE exists | 15–30 min | Noisy; always PREDICTION, the gate filters |
 
 Pipeline: `poller(cursor) → match dependency inventory → dedupe by CVE/GHSA id → LLM write-up → enqueue PREDICTION`.
+Built: OSV, GitHub Advisories (token from `GITHUB_TOKEN` or `gh auth token`), CISA KEV. Not yet: NVD, upstream commit watching.
 Pause during the hero beat, like Red-hunt. Skipped on purpose: social media, blogs, mailing lists (noisy; KEV covers "exploited").
 
 **Pitch hook:** the upstream-commit watcher can "catch the fix before the CVE". LangChain `7b13292`

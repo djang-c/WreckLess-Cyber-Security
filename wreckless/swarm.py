@@ -9,10 +9,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from wreckless import gate, ui
+from wreckless import feeds
 from wreckless.agents import blue, purple, red
 from wreckless.candidates import CandidateQueue
-from wreckless.config import BENCHMARKS, TARGETS, Settings
+from wreckless.config import BENCHMARKS, INTEL_DB, INVENTORY, TARGETS, Settings
 from wreckless.events import EventLog
+from wreckless.kb import IntelDB
 from wreckless.gitops import commit_all, init_victim, worktree
 from wreckless.notify import Notifier
 from wreckless.sandbox import Enclave
@@ -28,6 +30,7 @@ class Swarm:
         self.hero_file = self.home / "hero.lock"   # same signal for a daemon in another process
         self.stop = threading.Event()
         self.started = time.time()
+        self.intel = IntelDB(INTEL_DB)
 
     def hero_active(self) -> bool:
         """A hero run is in flight here or in another process sharing this home."""
@@ -55,16 +58,27 @@ class Swarm:
     def submit_cve(self, cve: str) -> str:
         self.events.item.id = None
         ui.mascot("purple")
-        intel = purple.ingest(cve, self.s)
+        intel = purple.ingest(cve, self.s, self.intel, TARGETS / "victim_app")
         item_id = self.queue.enqueue("purple", intel["summary"], cve=cve, payload={"intel": intel})
         ui.say("purple", f"{item_id} queued as \033[1mPREDICTION\033[0m")
         return item_id
 
     def purple_loop(self, interval: float) -> None:
-        """Scheduled: pick up any cached/live advisory not yet in the queue."""
+        """Scheduled: poll the feeds (live mode), then queue every benchmark bundle and every
+        inventory-matched advisory not yet in the queue (KEV first, then severity)."""
+        inv = feeds.load_inventory(INVENTORY)
         while not self.stop.is_set():
-            for adv in sorted(BENCHMARKS.glob("*/advisory.json")):
-                cve = adv.parent.name
+            if self.hero_active():          # the hero beat owns the GPU; poll again shortly
+                self.stop.wait(5)
+                continue
+            if self.s.mode == "live":
+                ui.say("purple", f"polling feeds for {', '.join(f'{n}@{v}' for n, v in inv['packages'].items())}")
+                ui.say("purple", "feeds: " + feeds.sync(self.intel, inv, self.s).line())
+            keys = [a.parent.name for a in sorted(BENCHMARKS.glob("*/advisory.json"))]
+            keys += [a["key"] for a in self.intel.relevant()]
+            for cve in dict.fromkeys(keys):
+                if self.stop.is_set():
+                    break
                 if not self.queue.has_cve(cve):
                     self.submit_cve(cve)
             self.stop.wait(interval)

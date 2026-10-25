@@ -7,6 +7,9 @@ ROOT = Path(__file__).resolve().parent.parent
 BENCHMARKS = ROOT / "benchmarks"
 TARGETS = ROOT / "targets"
 RUNS = ROOT / "runs"
+# advisories Purple has seen; shared by every swarm home so a live sync can feed an airgapped run
+INTEL_DB = Path(os.environ.get("WRECKLESS_INTEL_DB", RUNS / "intel.db"))
+INVENTORY = TARGETS / "victim_app" / "inventory.json"
 
 
 @dataclass(frozen=True)
@@ -34,4 +37,4 @@ class Settings:
     use_llm: bool = True
     agentic_exploit: bool = False   # drive the exploit through the victim LLM (prompt injection)
     max_agent_steps: int = 12
-    live_intel_hosts: tuple = ("api.github.com", "services.nvd.nist.gov")
+    live_intel_hosts: tuple = ("api.github.com", "api.osv.dev", "www.cisa.gov", "services.nvd.nist.gov")
