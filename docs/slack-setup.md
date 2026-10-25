@@ -8,8 +8,9 @@ WreckLess posts **one evolving run card** per run (`wreckless/notify.py`): first
 Socket Mode is outbound-only (wss to `*.slack.com`), so no public URL is needed and it
 survives `airgap_lockdown.sh` (which blocks only cloud-LLM egress).
 
-Approving first writes `runs/swarm/items/<item>/decision.json` with the exact commit approved (first
-click wins; only users in `SLACK_APPROVERS` can decide). If `WRECKLESS_GITHUB_REPO` is set, it then
+The listener only checks a click (approver, channel) and forwards it through Porter's airlock;
+Porter's inner door writes `runs/swarm/items/<item>/decision.json` with the exact commit approved
+(first click wins; only users in `SLACK_APPROVERS` can decide). If `WRECKLESS_GITHUB_REPO` is set, it then
 pushes that commit and opens a **draft PR** in the demo repo, and the card shows the PR link (section 6).
 Nothing leaves the box before the click; Reject never pushes; merging is a human step on GitHub.
 

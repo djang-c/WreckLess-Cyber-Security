@@ -2,9 +2,10 @@
 
 Socket Mode is outbound-only (wss to *.slack.com), so it survives the cloud-LLM airgap.
 Enabled only if `slack_bolt` is importable AND SLACK_BOT_TOKEN + SLACK_APP_TOKEN are set;
-otherwise `start_listener()` logs one line and returns None. A decision records
-`<items>/<item>/decision.json`; an approval then pushes the approved commit and opens a draft
-PR (wreckless/publish.py) only if WRECKLESS_GITHUB_REPO is set. Rejections never push.
+otherwise `start_listener()` logs one line and returns None. This is Porter's OUTER door: it
+never reads or writes a finding. A click is checked (approver, channel) and forwarded through the
+airlock; Porter's inner door (`wreckless daemon --porter` or `python -m wreckless.porter`)
+records `decision.json` and, for an approval with WRECKLESS_GITHUB_REPO set, opens the draft PR.
 
 Only Slack user IDs in SLACK_APPROVERS (comma-separated) may decide; unset means nobody can.
 If SLACK_CHANNEL is a channel ID, clicks from any other channel are ignored. The first
@@ -19,87 +20,20 @@ import json
 import os
 import re
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from wreckless.config import RUNS
-
-ITEMS = RUNS / "swarm" / "items"   # Swarm's default home; item dirs use '-' for '#'
-from wreckless.notify import APPROVE_ACTION, REJECT_ACTION, TEXT_MAX, _clip
+from wreckless.airlock import AlreadyDecided
+from wreckless.notify import APPROVE_ACTION, REJECT_ACTION, decided_blocks, pending_blocks
 
 Decision = Callable[[dict], object]
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def _log(msg: str) -> None:
     print(f"[slack-socket] {msg}", file=sys.stderr, flush=True)
-
-
-class AlreadyDecided(Exception):
-    """str(e) describes the decision already on disk, e.g. "approved by <@U123>"."""
-
-
-def _recorded(path: Path, tries: int = 5) -> str:
-    """Describe the decision in an existing decision.json (retrying a file still being written)."""
-    for i in range(tries):
-        try:
-            rec = json.loads(path.read_text())
-            who = f" by <@{rec['user']}>" if rec.get("user") else ""
-            return f"{rec.get('decision', 'decided')}{who}"
-        except (OSError, ValueError, TypeError, AttributeError):
-            time.sleep(0.05 * (i + 1))
-    return "decided"
-
-
-def record_decision(info: dict, runs_dir: Path = ITEMS) -> Path | None:
-    """Default callback: create <items>/<item>/decision.json once. No git push, no GitHub.
-
-    Anything that later acts on an approval must check the branch head still equals
-    info["commit"]: the approval covers that commit, not whatever the branch holds later.
-
-    The file appears atomically and complete (written + fsynced under a temp name, then
-    hard-linked into place, which fails if it already exists), so a concurrent click never
-    reads a half-written decision. A later click raises AlreadyDecided naming the recorded one.
-    """
-    run_id = (info.get("run_id") or "").replace("#", "-")
-    if not _SAFE_ID.match(run_id) or ".." in run_id:
-        _log(f"refusing to record decision for unsafe/missing run_id {run_id!r}")
-        return None
-    path = Path(runs_dir) / run_id / "decision.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        raise AlreadyDecided(_recorded(path))
-    fd, tmp = tempfile.mkstemp(prefix=".decision-", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps(info, indent=2))
-            f.flush()
-            os.fsync(f.fileno())
-        try:
-            os.link(tmp, path)  # atomic create-if-absent: first decision wins
-        except FileExistsError:
-            raise AlreadyDecided(_recorded(path)) from None
-    finally:
-        os.unlink(tmp)
-    return path
-
-
-def decided_blocks(blocks: list[dict], decision: str, user: str, branch: str | None,
-                   note: str | None = None) -> list[dict]:
-    """Pure: replace the actions block with the human decision (buttons removed => no double-click)."""
-    if decision == "approved":
-        text = f"✅ *Approved by <@{user}>* — approval recorded for branch `{branch or '?'}` (merge is a human step)"
-    else:
-        text = f"❌ *Rejected by <@{user}>* — branch `{branch or '?'}` left unmerged"
-    if note:
-        text += f"\n_{note}_"
-    kept = [b for b in blocks if b.get("type") != "actions"]
-    return kept + [{"type": "section", "block_id": "wreckless_decision",
-                    "text": {"type": "mrkdwn", "text": _clip(text, TEXT_MAX)}}]
 
 
 def _approvers() -> set[str]:
@@ -120,38 +54,19 @@ def _deny(client, channel: str | None, user: str, text: str) -> None:
         _log(f"ephemeral failed: {e}")
 
 
-def _publish_note(info: dict, out: dict) -> str:
-    at = f"{info['run_id']} @ {(info['commit'] or '?')[:10]}"
-    if out.get("pr"):
-        return f"draft PR opened: {out['pr']['url']} ({at})"
-    if out.get("pr_error"):
-        return (f"approval recorded for {at}, but the draft PR failed: {out['pr_error'][:200]}. "
-                f"Retry on the host: python -m wreckless.publish {info['run_id']}")
-    return f"recorded decision.json for {at} (GitHub not configured: approval stays local)"
-
-
 def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None = None,
-                  runs_dir: Path = ITEMS, approvers: set[str] | None = None) -> dict[str, Callable]:
-    """Return {action_id: handler}. Handlers use Bolt's kwarg injection (ack, body, client)."""
-    def default(info: dict) -> Path:
-        out = record_decision(info, runs_dir)
-        if out is None:
-            raise ValueError("decision refused (unsafe or missing run_id)")
-        return out
+                  approvers: set[str] | None = None, outer=None) -> dict[str, Callable]:
+    """Return {action_id: handler}. Handlers use Bolt's kwarg injection (ack, body, client).
 
-    def default_approve(info: dict) -> dict:
-        path = default(info)   # the approval is on disk before anything leaves the box
-        from wreckless import publish
-        try:
-            return {"path": path, "pr": publish.publish(info, runs_dir)}
-        except Exception as e:  # noqa: BLE001  the approval stands; the PR can be retried
-            _log(f"draft PR failed for {info.get('run_id')}: {e}")
-            return {"path": path, "pr_error": str(e)}
+    Default: a click is checked here (approver, channel) and forwarded through Porter's airlock;
+    the inside records it and opens the draft PR, and `Outer.deliver` redraws the card from the
+    reply. This process never reads or writes a finding. `on_approve`/`on_reject` callbacks
+    (library use and tests) are called in-process instead."""
+    if outer is None and (on_approve is None or on_reject is None):
+        from wreckless.porter_outer import Outer
+        outer = Outer()
 
-    on_approve = on_approve or default_approve
-    on_reject = on_reject or default
-
-    def handle(decision: str, callback: Decision, ack, body: dict, client) -> None:
+    def handle(decision: str, callback: Decision | None, ack, body: dict, client) -> None:
         try:
             ack()
         except Exception as e:  # noqa: BLE001
@@ -165,30 +80,38 @@ def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None
             user = (body.get("user") or {}).get("id") or ""
             msg = body.get("message") or {}
             channel = (body.get("channel") or {}).get("id") or (body.get("container") or {}).get("channel_id")
+            ts = msg.get("ts") or (body.get("container") or {}).get("message_ts")
             allowed = _approvers() if approvers is None else approvers
             if user not in allowed:
                 return _deny(client, channel, user, f"<@{user}> is not in SLACK_APPROVERS; {decision} ignored")
             expected = _expected_channel()
             if expected and channel != expected:
                 return _deny(client, channel, user, f"decisions are only accepted in <#{expected}>")
+            if callback is None:   # through the airlock
+                ok, why = outer.forward_decision(decision, user, channel, ts, msg.get("blocks") or [], value)
+                if not ok:
+                    return _deny(client, channel, user, f"{decision} could not be recorded ({why}); try again")
+                if channel and ts:
+                    client.chat_update(channel=channel, ts=ts, text=f"WreckLess: {decision} received",
+                                       blocks=pending_blocks(msg.get("blocks") or [], decision, user))
+                return
             info = {"decision": decision, "user": user, "run_id": value.get("run_id"),
                     "branch": value.get("branch"), "commit": value.get("commit"),
                     "cve": value.get("cve"), "t": time.time()}
             note = None
             try:
                 out = callback(info)
-                if isinstance(out, dict):
-                    note = _publish_note(info, out)
-                elif isinstance(out, Path):
+                if isinstance(out, Path):
                     note = f"recorded {out.name} for {info['run_id']} @ {(info['commit'] or '?')[:10]}"
             except AlreadyDecided as e:
-                return _deny(client, channel, user, f"{info['run_id']} was already {e}; click ignored")
+                rec = e.args[0] if e.args and isinstance(e.args[0], dict) else {}
+                return _deny(client, channel, user, f"{info['run_id']} was already {rec.get('decision', 'decided')}"
+                                                    + (f" by <@{rec['user']}>" if rec.get("user") else "") + "; click ignored")
             except Exception as e:  # noqa: BLE001
                 # nothing was recorded: leave the card and its buttons alone so someone can retry
                 _log(f"callback error: {e}")
                 return _deny(client, channel, user, f"{decision} for {info['run_id']} could not be "
                                                     "recorded (see the WreckLess host log); try again")
-            ts = msg.get("ts") or (body.get("container") or {}).get("message_ts")
             if channel and ts:
                 client.chat_update(channel=channel, ts=ts, text=f"WreckLess: {decision}",
                                    blocks=decided_blocks(msg.get("blocks") or [], decision, user,
@@ -202,12 +125,15 @@ def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None
     def reject(ack, body, client):
         handle("rejected", on_reject, ack, body, client)
 
-    return {APPROVE_ACTION: approve, REJECT_ACTION: reject}
+    handlers = {APPROVE_ACTION: approve, REJECT_ACTION: reject}
+    handlers["_outer"] = outer   # shared with register_porter (one airlock, one pending map)
+    return handlers
 
 
 def register(app, handlers: dict[str, Callable]) -> None:
     for action_id, fn in handlers.items():
-        app.action(action_id)(fn)
+        if not action_id.startswith("_"):
+            app.action(action_id)(fn)
 
 
 @dataclass
@@ -354,17 +280,19 @@ def register_porter(app, outer=None, stop: threading.Event | None = None, every:
     return outer
 
 
-def _build_handler(on_approve, on_reject, runs_dir: Path = ITEMS, stop: threading.Event | None = None):
+def _build_handler(on_approve, on_reject, stop: threading.Event | None = None):
     from slack_bolt import App
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     app = App(token=os.environ["SLACK_BOT_TOKEN"])
-    register(app, make_handlers(on_approve, on_reject, runs_dir))
-    register_porter(app, stop=stop)
+    handlers = make_handlers(on_approve, on_reject)
+    outer = handlers.pop("_outer")
+    register(app, handlers)
+    register_porter(app, outer=outer, stop=stop)
     return SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
 
 
 def start_listener(on_approve: Decision | None = None, on_reject: Decision | None = None,
-                   runs_dir: Path = ITEMS) -> ListenerHandle | None:
+                   runs_dir: Path | None = None) -> ListenerHandle | None:
     """Start the listener in a daemon thread. Never raises, never blocks the pipeline."""
     try:
         ok, why = _enabled()
@@ -378,7 +306,7 @@ def start_listener(on_approve: Decision | None = None, on_reject: Decision | Non
             while not handle.stopped.is_set():
                 try:
                     # App() calls auth.test and connect() opens the wss: either can fail
-                    handler = _build_handler(on_approve, on_reject, runs_dir, handle.stopped)
+                    handler = _build_handler(on_approve, on_reject, handle.stopped)
                     if not handle.adopt(handler):
                         return
                     handler.connect()  # non-blocking, unlike start()

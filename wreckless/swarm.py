@@ -340,6 +340,10 @@ class Swarm:
                    threading.Thread(target=self.worker_loop, daemon=True)]
         if hunt:
             threads.append(threading.Thread(target=self.red_hunt_loop, daemon=True))
+        if slack_listener and not porter:
+            porter = True   # clicks are recorded by the inner door; without it they would wait forever
+            ui.say("porter", "--slack-listener in this process: starting Porter's inner door too "
+                             "(stronger: python -m wreckless.slack_socket as its own process)")
         if porter:   # Porter's inner door; its outer door lives in the Slack listener process
             from wreckless.porter import Inner
             inner = Inner(self.home, queue=self.queue, s=self.s, use_llm=self.s.use_llm)
@@ -349,7 +353,7 @@ class Swarm:
         listener = None
         if slack_listener:
             from wreckless.slack_socket import start_listener
-            listener = start_listener(runs_dir=self.home / "items")
+            listener = start_listener()   # outer door only; decisions need the inner door (--porter)
         try:
             while not self.stop.wait(heartbeat):
                 ui.say("core", self.liveness())

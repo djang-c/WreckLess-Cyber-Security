@@ -10,6 +10,8 @@ What may leave through the airlock is decided here, not by the model:
            request, the Verifier and every check run again, and a new card needs a human Approve.
 - exploit: the exploit script stays on the box unless an approver asks for it by name; the
            release is logged as a `disclosure` event.
+- approve / reject: a card button, forwarded by the Slack side; recorded here (decisions.py),
+           and an approval opens the draft PR. The Slack process never touches the findings.
 Every reply is length-capped and scrubbed of secrets and absolute paths before it leaves.
 
 Standalone: python -m wreckless.porter [--home runs/swarm]   (the daemon runs it with --porter)
@@ -22,7 +24,8 @@ import time
 from pathlib import Path
 
 from wreckless import ui
-from wreckless.airlock import MAX_REPLY, Airlock, reply
+from wreckless import decisions
+from wreckless.airlock import DECISION_KINDS, MAX_REPLY, Airlock, reply
 from wreckless.candidates import CandidateQueue
 from wreckless.config import RUNS, Settings
 from wreckless.events import EventLog
@@ -109,9 +112,11 @@ class Inner:
             return []
 
     # ----- the five kinds -----
-    def handle(self, req: dict) -> str:
+    def handle(self, req: dict) -> str | dict:
         kind = req["kind"]
         ui.mascot("porter", "inner")
+        if kind in DECISION_KINDS:
+            return self._decide(req)
         ui.say("porter", f"brought a {kind} from Slack user {req['user']}: {req['text'][:80]!r}")
         if kind == "status":
             return self._status()
@@ -188,18 +193,33 @@ class Inner:
         return (f"⚠️ Exploit for *{item.id}*, released on request by <@{req['user']}> (logged).\n"
                 f"```{code}```")
 
+    def _decide(self, req: dict) -> dict:
+        decision = "approved" if req["kind"] == "approve" else "rejected"
+        info = {"decision": decision, "user": req["user"], "run_id": req["item"], "branch": req["branch"],
+                "commit": req["commit"], "cve": req["item"].split("#", 1)[0], "t": req["t"]}
+        res = decisions.decide(info, self.home / "items")
+        ui.say("porter", f"brought a click: {decision} of {req['item']} by {req['user']} → {res['outcome']}")
+        return res
+
     # ----- the door loop -----
     def run_once(self) -> int:
         with self.lock.door("inner"):
             reqs = self.lock.take("inner")
         for req in reqs:
+            extra = {}
             try:
-                text = self.handle(req)
+                res = self.handle(req)
+                if isinstance(res, dict):   # a decision: tell the Slack side how to redraw the card
+                    text, extra = res["note"], {k: res[k] for k in ("outcome", "decision", "by")}
+                else:
+                    text = res
             except Exception as e:  # noqa: BLE001  one bad request must not stop the door
                 text = f"Porter could not handle that ({type(e).__name__})."
+                if req["kind"] in DECISION_KINDS:
+                    extra = {"outcome": "error", "decision": None, "by": None}
             text = redact(text)[:MAX_REPLY]
             with self.lock.door("inner"):
-                self.lock.put("inner", reply(req, text))
+                self.lock.put("inner", reply(req, text, **extra))
             ui.mascot("porter", "outer")
         return len(reqs)
 

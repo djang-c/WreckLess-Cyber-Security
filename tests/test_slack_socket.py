@@ -27,6 +27,10 @@ class FakeClient:
         self.ephemeral.append(kw)
         return {"ok": True}
 
+    def chat_postMessage(self, **kw):
+        self.ephemeral.append(kw)
+        return {"ok": True}
+
 
 def final_card():
     return build_blocks([{"role": "blue", "title": f"✅ Fix branch ready (local, pending review): {CVE}", "body": "diff", "t_rel": 9}],
@@ -55,30 +59,60 @@ def acks():
     return seen, (lambda *a, **k: seen.append(1))
 
 
-def test_approve_acks_updates_card_and_records(tmp_path, acks):
-    seen, ack = acks
-    client = FakeClient()
-    handlers = slack_socket.make_handlers(runs_dir=tmp_path)
-    handlers[APPROVE_ACTION](ack=ack, body=action_body(APPROVE_ACTION), client=client)
-    assert seen == [1]
-    [up] = client.updates
-    assert up["channel"] == "C0FAKE" and up["ts"] == "111.222"
-    assert not [b for b in up["blocks"] if b["type"] == "actions"]  # buttons gone
-    last = up["blocks"][-1]["text"]["text"]
-    assert f"Approved by <@U123>* — approval recorded for branch `{BRANCH}`" in last
-    rec = json.loads((tmp_path / RUN_DIR / "decision.json").read_text())
+# ---------- decisions go through Porter's airlock: the listener never touches a finding ----------
+@pytest.fixture
+def wire(tmp_path):
+    """Listener handlers + Porter's inner door on one airlock; items live in tmp_path/items."""
+    from wreckless import porter
+    from wreckless.airlock import Airlock
+    from wreckless.config import Settings
+    from wreckless.porter_outer import Outer
+    lock = Airlock(tmp_path / "airlock")
+    outer = Outer(lock)
+    inner = porter.Inner(tmp_path, lock=lock, s=Settings(use_llm=False), use_llm=False)
+    h = slack_socket.make_handlers(outer=outer)
+
+    def click(action, user="U123", value=None, client=None, settle=True):
+        c = client or FakeClient()
+        h[action](ack=lambda *a, **k: None, body=action_body(action, value, user), client=c)
+        if settle:
+            inner.run_once()
+            outer.deliver(c)
+        return c
+    click.items, click.inner, click.outer = tmp_path / "items", inner, outer
+    return click
+
+
+def test_approve_goes_through_the_airlock_and_redraws_the_card(wire):
+    c = wire(APPROVE_ACTION)
+    pending, final = c.updates
+    assert not [b for b in pending["blocks"] if b["type"] == "actions"]       # no double-click meanwhile
+    assert "recording it on the WreckLess host" in pending["blocks"][-1]["text"]["text"]
+    assert final["channel"] == "C0FAKE" and final["ts"] == "111.222"
+    assert f"Approved by <@U123>* — approval recorded for branch `{BRANCH}`" in final["blocks"][-1]["text"]["text"]
+    rec = json.loads((wire.items / RUN_DIR / "decision.json").read_text())
     assert rec["commit"] == COMMIT and rec["run_id"] == RUN_ID
     assert rec["decision"] == "approved" and rec["user"] == "U123" and rec["branch"] == BRANCH
 
 
-def test_reject_updates_card_and_custom_callback_called(tmp_path, acks):
-    seen, ack = acks
+def test_nothing_is_recorded_until_the_inside_runs(wire):
+    c = wire(APPROVE_ACTION, settle=False)
+    assert len(c.updates) == 1 and not (wire.items / RUN_DIR).exists()   # the listener wrote nothing
+
+
+def test_reject_is_recorded_and_never_publishes(wire, monkeypatch):
+    from wreckless import publish
+    monkeypatch.setattr(publish, "publish", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pushed")))
+    c = wire(REJECT_ACTION)
+    assert "Rejected by <@U123>" in c.updates[-1]["blocks"][-1]["text"]["text"]
+    assert json.loads((wire.items / RUN_DIR / "decision.json").read_text())["decision"] == "rejected"
+
+
+def test_custom_callbacks_still_run_in_process(acks):
     got, client = [], FakeClient()
-    handlers = slack_socket.make_handlers(on_reject=got.append, runs_dir=tmp_path)
-    handlers[REJECT_ACTION](ack=ack, body=action_body(REJECT_ACTION), client=client)
-    assert seen == [1] and got[0]["decision"] == "rejected"
-    assert "Rejected by <@U123>" in client.updates[0]["blocks"][-1]["text"]["text"]
-    assert not (tmp_path / RUN_DIR / "decision.json").exists()
+    h = slack_socket.make_handlers(on_approve=got.append, on_reject=got.append)
+    h[REJECT_ACTION](ack=acks[1], body=action_body(REJECT_ACTION), client=client)
+    assert got[0]["decision"] == "rejected" and "Rejected by <@U123>" in client.updates[0]["blocks"][-1]["text"]["text"]
 
 
 def test_custom_approve_callback_error_does_not_raise(acks):
@@ -88,62 +122,49 @@ def test_custom_approve_callback_error_does_not_raise(acks):
     def bad(info):
         raise RuntimeError("merge bot offline")
 
-    slack_socket.make_handlers(on_approve=bad)[APPROVE_ACTION](
+    slack_socket.make_handlers(on_approve=bad, on_reject=bad)[APPROVE_ACTION](
         ack=ack, body=action_body(APPROVE_ACTION), client=client)
     assert not client.updates                       # card keeps its buttons: nothing was recorded
     text = client.ephemeral[0]["text"]
     assert "could not be recorded" in text and "merge bot offline" not in text  # no internals in Slack
 
 
-def test_save_failure_keeps_buttons_and_retry_works(tmp_path, acks, monkeypatch):
-    client = FakeClient()
-    h = slack_socket.make_handlers(runs_dir=tmp_path)
-    real_link = slack_socket.os.link
-    monkeypatch.setattr(slack_socket.os, "link", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
-    h[APPROVE_ACTION](ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
-    assert not client.updates and "could not be recorded" in client.ephemeral[0]["text"]
-    assert not (tmp_path / RUN_DIR / "decision.json").exists()
-    assert list((tmp_path / RUN_DIR).iterdir()) == []   # temp file cleaned up
-    monkeypatch.setattr(slack_socket.os, "link", real_link)
-    h[APPROVE_ACTION](ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
-    assert "Approved by <@U123>" in client.updates[0]["blocks"][-1]["text"]["text"]
+def test_save_failure_restores_buttons_and_retry_works(wire, monkeypatch):
+    from wreckless import decisions
+    real_link = decisions.os.link
+    monkeypatch.setattr(decisions.os, "link", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+    c = wire(APPROVE_ACTION)
+    assert [b for b in c.updates[-1]["blocks"] if b["type"] == "actions"]   # buttons back
+    assert "could not be recorded" in c.ephemeral[-1]["text"]
+    assert not (wire.items / RUN_DIR / "decision.json").exists()
+    assert list((wire.items / RUN_DIR).iterdir()) == []   # temp file cleaned up
+    monkeypatch.setattr(decisions.os, "link", real_link)
+    c = wire(APPROVE_ACTION)
+    assert "Approved by <@U123>" in c.updates[-1]["blocks"][-1]["text"]["text"]
 
 
-def test_unsafe_run_id_with_default_callback_keeps_buttons(tmp_path, acks):
-    client = FakeClient()
-    body = action_body(APPROVE_ACTION, value=json.dumps({"run_id": "../../etc", "commit": COMMIT}))
-    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](ack=acks[1], body=body, client=client)
-    assert not client.updates and "could not be recorded" in client.ephemeral[0]["text"]
+@pytest.mark.parametrize("value", [json.dumps({"run_id": "../../etc", "commit": COMMIT, "branch": BRANCH}),
+                                   json.dumps({"run_id": RUN_ID, "commit": "HEAD", "branch": BRANCH}),
+                                   json.dumps({"run_id": RUN_ID, "commit": COMMIT, "branch": "main"}),
+                                   "not json"])
+def test_malformed_click_never_reaches_the_inside(wire, value):
+    c = wire(APPROVE_ACTION, value=value, settle=False)
+    assert not c.updates and "could not be recorded" in c.ephemeral[0]["text"]
+    assert not list((wire.items.parent / "airlock" / "inbox").glob("*.json"))
 
 
-def test_concurrent_clicks_record_one_decision_and_report_it(tmp_path, acks, monkeypatch):
-    """Two approvers click at once: exactly one decision lands; the loser is told the real one."""
-    import threading
-    h = slack_socket.make_handlers(runs_dir=tmp_path)
-    clients = {"U123": FakeClient(), "U456": FakeClient()}
-    barrier = threading.Barrier(2)
-    real_mkstemp = slack_socket.tempfile.mkstemp
-
-    def synced(*a, **k):
-        out = real_mkstemp(*a, **k)
-        barrier.wait(timeout=5)                     # both past the exists() check, both writing
-        return out
-
-    monkeypatch.setattr(slack_socket.tempfile, "mkstemp", synced)
-    threads = [threading.Thread(target=h[APPROVE_ACTION if u == "U123" else REJECT_ACTION],
-                                kwargs={"ack": acks[1], "client": c,
-                                        "body": action_body(APPROVE_ACTION if u == "U123" else REJECT_ACTION, user=u)})
-               for u, c in clients.items()]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
-    rec = json.loads((tmp_path / RUN_DIR / "decision.json").read_text())
-    winner = clients[rec["user"]]
-    loser = clients["U456" if rec["user"] == "U123" else "U123"]
-    assert len(winner.updates) == 1 and not loser.updates
-    assert f"already {rec['decision']} by <@{rec['user']}>" in loser.ephemeral[0]["text"]
-    assert [p.name for p in (tmp_path / RUN_DIR).iterdir()] == ["decision.json"]
+def test_two_clicks_one_decision_and_the_second_is_told(wire):
+    c1 = wire(APPROVE_ACTION, settle=False)
+    c2 = wire(REJECT_ACTION, user="U456", settle=False)
+    wire.inner.run_once()
+    shared = FakeClient()
+    wire.outer.deliver(shared)
+    rec = json.loads((wire.items / RUN_DIR / "decision.json").read_text())
+    assert rec["decision"] == "approved" and rec["user"] == "U123"
+    assert all("Approved by <@U123>" in u["blocks"][-1]["text"]["text"] for u in shared.updates)
+    assert any("already approved by <@U123>" in e["text"] and e["user"] == "U456" for e in shared.ephemeral)
+    assert [p.name for p in (wire.items / RUN_DIR).iterdir()] == ["decision.json"]
+    assert c1.updates and c2.updates                 # each clicker saw "recording…" at once
 
 
 def test_handler_survives_garbage_body_and_client_failure(acks):
@@ -153,50 +174,46 @@ def test_handler_survives_garbage_body_and_client_failure(acks):
         def chat_update(self, **kw):
             raise ConnectionError("socket closed")
 
-    h = slack_socket.make_handlers(on_approve=lambda i: None)[APPROVE_ACTION]
+    h = slack_socket.make_handlers(on_approve=lambda i: None, on_reject=lambda i: None)[APPROVE_ACTION]
     h(ack=ack, body={"actions": [{"value": "not json"}]}, client=Broken())
     h(ack=ack, body=action_body(APPROVE_ACTION), client=Broken())
     assert seen == [1, 1]
 
 
 @pytest.mark.parametrize("user", ["U999", ""])
-def test_unlisted_user_cannot_decide(tmp_path, acks, user):
-    _, ack = acks
-    client = FakeClient()
-    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
-        ack=ack, body=action_body(APPROVE_ACTION, user=user), client=client)
-    assert not client.updates and not list(tmp_path.iterdir())
+def test_unlisted_user_cannot_decide(wire, user):
+    c = wire(APPROVE_ACTION, user=user)
+    assert not c.updates and not wire.items.exists()
 
 
-def test_no_approvers_configured_means_nobody(tmp_path, acks, monkeypatch):
+def test_no_approvers_configured_means_nobody(wire, monkeypatch):
     monkeypatch.delenv("SLACK_APPROVERS")
-    client = FakeClient()
-    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
-        ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
-    assert not client.updates and not list(tmp_path.iterdir())
+    c = wire(APPROVE_ACTION)
+    assert not c.updates and not wire.items.exists()
 
 
-def test_wrong_channel_is_ignored(tmp_path, acks, monkeypatch):
+def test_wrong_channel_is_ignored(wire, monkeypatch):
     monkeypatch.setenv("SLACK_CHANNEL", "C0REAL123")
-    client = FakeClient()
-    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
-        ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
-    assert not client.updates and client.ephemeral
-
-
-def test_first_decision_wins(tmp_path, acks):
-    h = slack_socket.make_handlers(runs_dir=tmp_path)
-    c1, c2 = FakeClient(), FakeClient()
-    h[APPROVE_ACTION](ack=acks[1], body=action_body(APPROVE_ACTION), client=c1)
-    h[REJECT_ACTION](ack=acks[1], body=action_body(REJECT_ACTION, user="U456"), client=c2)
-    rec = json.loads((tmp_path / RUN_DIR / "decision.json").read_text())
-    assert rec["decision"] == "approved" and not c2.updates and "already approved" in c2.ephemeral[0]["text"]
+    c = wire(APPROVE_ACTION)
+    assert not c.updates and c.ephemeral and not wire.items.exists()
 
 
 @pytest.mark.parametrize("run_id", ["../../etc", "/abs", "", None, "a/b"])
 def test_record_decision_rejects_unsafe_run_id(tmp_path, run_id):
-    assert slack_socket.record_decision({"decision": "approved", "run_id": run_id}, tmp_path) is None
+    from wreckless.decisions import record_decision
+    assert record_decision({"decision": "approved", "run_id": run_id}, tmp_path) is None
     assert list(tmp_path.iterdir()) == []
+
+
+def test_listener_process_cannot_reach_findings_github_or_models():
+    """The Slack listener module loads nothing that reads or writes a finding, pushes, or runs a model."""
+    import subprocess
+    forbidden = ["wreckless.swarm", "wreckless.porter", "wreckless.candidates", "wreckless.sandbox",
+                 "wreckless.gitops", "wreckless.agents", "wreckless.llm", "wreckless.publish",
+                 "wreckless.decisions", "wreckless.gate", "openai"]
+    code = f"import sys, wreckless.slack_socket; print([m for m in {forbidden!r} if m in sys.modules])"
+    assert subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          check=True).stdout.strip() == "[]"
 
 
 def test_register_wires_both_action_ids():
@@ -366,16 +383,8 @@ def test_preflight_makes_no_network_calls(monkeypatch):
     _check(monkeypatch, GOOD)
 
 
-# ---------- Approve -> draft PR (wreckless/publish.py) ----------
-def _approve(tmp_path, acks):
-    seen, ack = acks
-    client = FakeClient()
-    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
-        ack=ack, body=action_body(APPROVE_ACTION), client=client)
-    return client.updates[-1]["blocks"][-1]["text"]["text"]
-
-
-def test_approve_opens_draft_pr_and_links_it(tmp_path, acks, monkeypatch):
+# ---------- Approve -> draft PR, opened on the inside ----------
+def test_approve_opens_draft_pr_and_links_it(wire, monkeypatch):
     from wreckless import publish
     got = []
 
@@ -385,36 +394,26 @@ def test_approve_opens_draft_pr_and_links_it(tmp_path, acks, monkeypatch):
         return {"url": "https://github.com/acme/v/pull/7"}
 
     monkeypatch.setattr(publish, "publish", fake)
-    text = _approve(tmp_path, acks)
+    text = wire(APPROVE_ACTION).updates[-1]["blocks"][-1]["text"]["text"]
     assert "draft PR opened: https://github.com/acme/v/pull/7" in text
     assert got[0]["commit"] == COMMIT and got[0]["decision"] == "approved"
 
 
-def test_failed_pr_keeps_the_approval_and_says_how_to_retry(tmp_path, acks, monkeypatch):
+def test_failed_pr_keeps_the_approval_and_says_how_to_retry(wire, monkeypatch):
     from wreckless import publish
 
     def fail(info, runs_dir):
         raise publish.PublishError("push failed: network unreachable")
 
     monkeypatch.setattr(publish, "publish", fail)
-    text = _approve(tmp_path, acks)
+    text = wire(APPROVE_ACTION).updates[-1]["blocks"][-1]["text"]["text"]
     assert "draft PR failed: push failed: network unreachable" in text
     assert f"python -m wreckless.publish {RUN_ID}" in text
-    assert json.loads((tmp_path / RUN_DIR / "decision.json").read_text())["decision"] == "approved"
+    assert json.loads((wire.items / RUN_DIR / "decision.json").read_text())["decision"] == "approved"
 
 
-def test_without_github_repo_approval_stays_local(tmp_path, acks):
-    assert "GitHub not configured: approval stays local" in _approve(tmp_path, acks)
-
-
-def test_reject_never_publishes(tmp_path, acks, monkeypatch):
-    from wreckless import publish
-    monkeypatch.setattr(publish, "publish", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pushed")))
-    seen, ack = acks
-    client = FakeClient()
-    slack_socket.make_handlers(runs_dir=tmp_path)[REJECT_ACTION](
-        ack=ack, body=action_body(REJECT_ACTION), client=client)
-    assert "Rejected by" in client.updates[-1]["blocks"][-1]["text"]["text"]
+def test_without_github_repo_approval_stays_local(wire):
+    assert "GitHub not configured: approval stays local" in wire(APPROVE_ACTION).updates[-1]["blocks"][-1]["text"]["text"]
 
 
 def test_preflight_github_rows(monkeypatch):

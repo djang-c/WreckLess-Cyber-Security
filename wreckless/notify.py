@@ -224,3 +224,24 @@ class Notifier:
         with urllib.request.urlopen(req, timeout=3) as r:
             body = r.read().decode()
         return json.loads(body) if body.startswith("{") else {}
+
+
+def decided_blocks(blocks: list[dict], decision: str, user: str, branch: str | None,
+                   note: str | None = None) -> list[dict]:
+    """Pure: replace the actions block with the human decision (buttons removed => no double-click)."""
+    if decision == "approved":
+        text = f"✅ *Approved by <@{user}>* — approval recorded for branch `{branch or '?'}` (merge is a human step)"
+    else:
+        text = f"❌ *Rejected by <@{user}>* — branch `{branch or '?'}` left unmerged"
+    if note:
+        text += f"\n_{note}_"
+    kept = [b for b in blocks if b.get("type") != "actions"]
+    return kept + [{"type": "section", "block_id": "wreckless_decision",
+                    "text": {"type": "mrkdwn", "text": _clip(text, TEXT_MAX)}}]
+
+
+def pending_blocks(blocks: list[dict], decision: str, user: str) -> list[dict]:
+    """Pure: buttons removed while the inside records a click (no double-click meanwhile)."""
+    kept = [b for b in blocks if b.get("type") != "actions"]
+    return kept + [{"type": "section", "block_id": "wreckless_decision", "text": {"type": "mrkdwn", "text":
+                    f"⏳ *{decision.capitalize()} by <@{user}>* received; recording it on the WreckLess host…"}}]

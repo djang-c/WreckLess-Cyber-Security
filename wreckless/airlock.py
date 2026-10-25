@@ -28,15 +28,23 @@ from pathlib import Path
 
 from wreckless.config import RUNS
 
-KINDS = ("ask", "status", "note", "change", "exploit")
+KINDS = ("ask", "status", "note", "change", "exploit", "approve", "reject")
+DECISION_KINDS = ("approve", "reject")
+OUTCOMES = ("recorded", "already", "refused", "error")
 MAX_TEXT, MAX_REPLY = 2000, 3500
 _ID = re.compile(r"^[0-9a-f]{16}$")
 _ITEM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,60}#\d{1,6}$")
 _USER = re.compile(r"^[UW][A-Z0-9]{2,20}$")
 _CHAN = re.compile(r"^[CGD][A-Z0-9]{2,20}$")
 _TS = re.compile(r"^\d{1,12}\.\d{1,8}$")
-REQUEST_FIELDS = {"id", "kind", "text", "user", "item", "channel", "thread", "t"}
-REPLY_FIELDS = {"id", "request", "text", "channel", "thread", "t"}
+_BRANCH = re.compile(r"^wreckless/fix-[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+REQUEST_FIELDS = {"id", "kind", "text", "user", "item", "channel", "thread", "t", "branch", "commit"}
+REPLY_FIELDS = {"id", "request", "text", "channel", "thread", "t", "outcome", "decision", "by", "branch"}
+
+
+class AlreadyDecided(Exception):
+    """args[0]: the decision already on disk (a dict, e.g. {"decision": "approved", "user": ...})."""
 
 
 class BadMessage(ValueError):
@@ -70,6 +78,11 @@ def validate_request(m: dict) -> dict:
         raise BadMessage("bad user")
     if m.get("item") is not None and not _ITEM.match(str(m["item"])):
         raise BadMessage("bad item id")
+    if m["kind"] in DECISION_KINDS:   # a button click: bound to one finding and one exact commit
+        if not m.get("item") or not _BRANCH.match(str(m.get("branch"))) or not _SHA.match(str(m.get("commit"))):
+            raise BadMessage("a decision needs a finding id, its fix branch and the exact commit")
+    elif m.get("branch") is not None or m.get("commit") is not None:
+        raise BadMessage("branch/commit only belong to a decision")
     return m
 
 
@@ -79,18 +92,29 @@ def validate_reply(m: dict) -> dict:
         raise BadMessage("bad id")
     if len(m["text"]) > MAX_REPLY:
         raise BadMessage("reply too long")
+    if m.get("outcome") is not None and m["outcome"] not in OUTCOMES:
+        raise BadMessage("bad outcome")
+    if m.get("decision") not in (None, "approved", "rejected"):
+        raise BadMessage("bad decision")
+    if m.get("by") is not None and not _USER.match(str(m["by"])):
+        raise BadMessage("bad user")
+    if m.get("branch") is not None and not _BRANCH.match(str(m["branch"])):
+        raise BadMessage("bad branch")
     return m
 
 
 def request(kind: str, text: str, user: str, item: str | None = None, channel: str | None = None,
-            thread: str | None = None) -> dict:
+            thread: str | None = None, branch: str | None = None, commit: str | None = None) -> dict:
     return validate_request({"id": secrets.token_hex(8), "kind": kind, "text": text, "user": user,
-                             "item": item, "channel": channel, "thread": thread, "t": time.time()})
+                             "item": item, "channel": channel, "thread": thread, "t": time.time(),
+                             "branch": branch, "commit": commit})
 
 
-def reply(req: dict, text: str) -> dict:
+def reply(req: dict, text: str, outcome: str | None = None, decision: str | None = None,
+          by: str | None = None) -> dict:
     return validate_reply({"id": secrets.token_hex(8), "request": req["id"], "text": text[:MAX_REPLY],
-                           "channel": req.get("channel"), "thread": req.get("thread"), "t": time.time()})
+                           "channel": req.get("channel"), "thread": req.get("thread"), "t": time.time(),
+                           "outcome": outcome, "decision": decision, "by": by, "branch": req.get("branch")})
 
 
 class Airlock:

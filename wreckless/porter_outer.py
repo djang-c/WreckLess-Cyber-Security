@@ -20,6 +20,7 @@ import time
 from collections import defaultdict, deque
 
 from wreckless.airlock import MAX_TEXT, Airlock, BadMessage, request
+from wreckless.notify import decided_blocks
 
 _MENTION = re.compile(r"<@[A-Z0-9]+>")
 _ITEM = re.compile(r"\b((?:CVE-\d{4}-\d{4,}|HUNT)#\d{1,6})\b")
@@ -51,6 +52,7 @@ class Outer:
         self._approvers, self._channel = approvers, channel
         self.clock = clock
         self.recent: dict[str, deque] = defaultdict(deque)
+        self.pending: dict[str, dict] = {}   # decision request id -> the card to redraw
 
     def approvers(self) -> set[str]:
         if self._approvers is not None:
@@ -106,13 +108,46 @@ class Outer:
         except Exception as e:  # noqa: BLE001
             _log(f"ack failed: {e}")
 
+    def forward_decision(self, decision: str, user: str, channel: str | None, ts: str | None,
+                         blocks: list, value: dict) -> tuple[bool, str]:
+        """A card click (already checked: approver, channel) -> one airlock request."""
+        try:
+            req = request("approve" if decision == "approved" else "reject", "", user, value.get("run_id"),
+                          channel, ts, value.get("branch"), value.get("commit"))
+        except BadMessage as e:
+            return False, str(e)
+        with self.lock.door("outer"):
+            self.lock.put("outer", req)
+        self.pending[req["id"]] = {"blocks": blocks, "user": user, "decision": decision}
+        return True, ""
+
     def deliver(self, client) -> int:
         """Post every reply waiting in the outbox. The door is held only to take them."""
         with self.lock.door("outer"):
             replies = self.lock.take("outer")
         for r in replies:
             try:
-                client.chat_postMessage(channel=r["channel"], thread_ts=r.get("thread"), text=r["text"])
+                if r.get("outcome"):
+                    self._redraw(client, r)
+                else:
+                    client.chat_postMessage(channel=r["channel"], thread_ts=r.get("thread"), text=r["text"])
             except Exception as e:  # noqa: BLE001
                 _log(f"reply post failed: {e}")
         return len(replies)
+
+    def _redraw(self, client, r: dict) -> None:
+        """A decision came back: decided card, or (nothing recorded) the original card with buttons."""
+        p = self.pending.pop(r["request"], None)
+        ch, ts = r.get("channel"), r.get("thread")
+        if p is None:   # this listener restarted since the click: say it in the thread instead
+            client.chat_postMessage(channel=ch, thread_ts=ts, text=r["text"])
+            return
+        if r["outcome"] in ("recorded", "already") and r.get("decision"):
+            client.chat_update(channel=ch, ts=ts, text=f"WreckLess: {r['decision']}",
+                               blocks=decided_blocks(p["blocks"], r["decision"], r.get("by") or p["user"],
+                                                     r.get("branch"), r["text"] if r["outcome"] == "recorded" else None))
+            if r["outcome"] == "already":
+                client.chat_postEphemeral(channel=ch, user=p["user"], text=r["text"])
+        else:
+            client.chat_update(channel=ch, ts=ts, text="WreckLess: decision not recorded", blocks=p["blocks"])
+            client.chat_postEphemeral(channel=ch, user=p["user"], text=r["text"])

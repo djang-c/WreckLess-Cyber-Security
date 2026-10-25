@@ -36,9 +36,15 @@ from Slack, while the protected codebase and the agents are never reachable from
 - **Enforcement is logical, not yet OS-level.** On the Mac both doors run as the same user. On the
   GB10 the plan is: outer door as its own Linux user with no read access to `runs/` except
   `runs/airlock/`, inner door in a no-network sandbox except the local model. Not built yet.
-- **Approve/Reject still run in the listener process** (they write `decision.json` and push the
-  draft PR, so that process can read item folders). Moving decisions behind the airlock too is
-  the next step for a clean split.
+- **Decisions are behind the airlock too (2026-10-25).** A card click is checked in the listener
+  (approver, channel) and forwarded as an `approve`/`reject` request bound to the finding, its fix
+  branch and the exact commit; the inner door records `decision.json` and opens the draft PR
+  (`wreckless/decisions.py`). The listener module loads nothing that can reach a finding, GitHub
+  or a model (`test_listener_process_cannot_reach_findings_github_or_models`). The draft PR push is
+  the one deliberate outward path from the inside, and only after a human Approve.
+- **The inner door must be running** for clicks and questions to be answered
+  (`wreckless daemon --porter`, or `python -m wreckless.porter` next to a `wreckless run`); until
+  then the card says "recording it on the WreckLess host…".
 - **Slack is a cloud service.** Whatever Porter replies is stored by Slack. The promise is
   "only the briefing (and an exploit you asked for) leaves", not "nothing leaves".
 - The local model can still be wrong; answers are labelled with the model that wrote them, and
