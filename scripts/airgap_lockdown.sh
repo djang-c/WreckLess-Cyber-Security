@@ -193,9 +193,18 @@ has_global_v6() {  # a non-loopback global IPv6 address AND a default route to u
     [[ -n $(ip -6 route show default 2>/dev/null) ]]
 }
 
+# reject_hits <4|6>: packets our chain's REJECT rules have matched (root only; "" if unknown)
+reject_hits() {
+  local ipt
+  if [[ $1 == 4 ]]; then ipt=$IPT4; else ipt=$IPT6; fi
+  [[ $EUID -eq 0 && -n $ipt ]] || return 0
+  "$ipt" -L "$CHAIN" -v -x -n 2>/dev/null | awk '$3 == "REJECT" {s += $1} END {if (NR) print s + 0}'
+}
+
 verify() {
-  local fails=0 rc t0 dt code body host fam err
+  local fails=0 rc t0 dt code body host fam err h0 h1
   local -a rows=()
+  [[ $EUID -eq 0 ]] && init_backends
   for host in api.openai.com api.anthropic.com; do
     for fam in 4 6; do
       if [[ $fam == 6 ]] && ! has_global_v6; then
@@ -203,11 +212,17 @@ verify() {
       fi
       # Only a fast TCP reset proves our REJECT fired. DNS failure (6), no route,
       # TLS/proxy errors or timeouts say nothing about the firewall, so they FAIL.
-      rc=0; t0=$(now_ms)
+      # As root the proof is our REJECT counter going up. Without root we fall back to
+      # curl's message, whose wording varies (7.88: "Couldn't connect to server").
+      rc=0; h0=$(reject_hits "$fam"); t0=$(now_ms)
       err=$(curl -"$fam" -s -o /dev/null -w '%{errormsg}' --max-time 4 "https://$host/" 2>/dev/null) || rc=$?
-      dt=$(( $(now_ms) - t0 ))
-      if [[ $rc -eq 7 && $err == *refused* && $dt -le 3000 ]]; then
-        rows+=("$host (v$fam) blocked|PASS|reset in ${dt} ms")
+      dt=$(( $(now_ms) - t0 )); h1=$(reject_hits "$fam")
+      if [[ $rc -eq 7 && $dt -le 3000 && -n $h0 && -n $h1 ]] && (( h1 > h0 )); then
+        rows+=("$host (v$fam) blocked|PASS|our REJECT hit +$((h1 - h0)) pkt, reset in ${dt} ms")
+      elif [[ $rc -eq 7 && $dt -le 3000 && -n $h0 ]]; then
+        rows+=("$host (v$fam) blocked|FAIL|refused, but not by our chain (counter unchanged)"); fails=$((fails+1))
+      elif [[ $rc -eq 7 && $dt -le 3000 && ( $err == *refused* || $err == *"Couldn't connect to server"* ) ]]; then
+        rows+=("$host (v$fam) blocked|PASS|reset in ${dt} ms (run as root to check our counter)")
       elif [[ $rc -ne 0 ]]; then
         rows+=("$host (v$fam) blocked|FAIL|curl exit $rc ${err:0:40} (not our reject)"); fails=$((fails+1))
       else
