@@ -76,12 +76,12 @@ def test_panel_renders_up_and_down(capsys, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     ui.gb10_panel(120.0, 60.0, [
         {"role": "blue", "port": 8001, "up": True, "mem_util": 0.45, "tok_s": 31.2,
-         "kv_usage": 0.12, "running": 1, "waiting": 0},
-        {"role": "victim", "port": 8002, "up": False, "error": "URLError"}])
+         "kv_usage": 0.12, "running": 1, "waiting": 0, "ckpt": "Qwen3-Coder@abc1234", "ctx": 16384},
+        {"role": "victim", "port": 8002, "up": False, "error": "URLError"}], "openshell · policy.yaml")
     out = capsys.readouterr().out
     assert "54 GB" in out and "31.2 tok/s" in out and "DOWN URLError" in out
-    assert "1/2 up" in out
-    widths = {len(line) for line in out.splitlines()[:-1]}
+    assert "ctx 16k" in out and "Qwen3-Coder@abc1234" in out and "sandbox  " in out
+    widths = {len(line) for line in out.splitlines()}
     assert len(widths) == 1                         # borders line up
 
 
@@ -135,3 +135,21 @@ def test_ports_are_probed_concurrently(monkeypatch):
     snap = mon.sample()
     assert _t.monotonic() - t0 < 0.8
     assert [p.role for p in snap.ports] == ["a", "b", "c"]
+
+
+def test_panel_rows_stay_one_line_at_any_width(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    port = {"role": "scout+ralph", "port": 8000, "up": True, "mem_util": 0.2, "tok_s": 5.0, "kv_usage": 0.1,
+            "running": 1, "waiting": 0, "ckpt": "Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit@cb67b41", "ctx": 16384}
+    for width in (70, 78, 112):
+        line = ui._fit(":8000 scout+ralph", port["ckpt"], ["ctx 16k", "kv 10%", "5.0 tok/s", " 24 GB", "1r/0w"], width)
+        assert len(line) == width and "\n" not in line
+    assert "@cb67b41" in ui._fit(":8000 x", port["ckpt"], ["ctx 16k"], 100)
+    assert "@" not in ui._fit(":8000 x", port["ckpt"], ["ctx 16k", "kv 10%", "5.0 tok/s"], 70)
+
+
+def test_revisions_read_from_the_model_manifest(tmp_path):
+    f = tmp_path / "models.tsv"
+    f.write_text("# c\nblue 8001 blue 0.45 qwen3_coder cyankiwi/Qwen3-Coder-Next-AWQ-4bit c92cabfad08c\n"
+                 "- - - - - Some/Other main\n")
+    assert metrics.revisions(f) == {"Qwen3-Coder-Next-AWQ-4bit": "c92cabf", "Other": "main"[:7]}

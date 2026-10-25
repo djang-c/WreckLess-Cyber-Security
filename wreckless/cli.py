@@ -2,11 +2,12 @@
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 from wreckless import sandbox, targets, ui
-from wreckless.config import RUNS, Settings
+from wreckless.config import RUNS, Settings, load_env
 from wreckless.events import replay
 from wreckless.swarm import Swarm
 
@@ -25,6 +26,19 @@ def _backend() -> str:
     if want == "openshell" or (want == "auto" and sandbox.openshell_available()):
         return "openshell"
     return "userland-guard"
+
+
+def _sandbox_line() -> str:
+    """Which enclave the next run would use, and what its policy allows."""
+    backend = _backend()
+    if backend != "openshell":
+        return "userland guard (python audit hook; NOT kernel isolation)"
+    policy = sandbox.SANDBOX_POLICY
+    try:
+        egress = "egress allowed: see policy" if re.search(r"^network", policy.read_text(), re.M) else "egress deny-all (agentic: victim port only)"
+    except OSError:
+        egress = "policy unreadable"
+    return f"openshell · {policy.name} · {egress}"
 
 
 def _positive(text: str) -> float:
@@ -90,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
     mc.add_argument("--seconds", type=float, default=32)
 
     a = ap.parse_args(argv)
+    if a.cmd in ("run", "daemon"):  # the commands that post to Slack read its tokens from .env
+        load_env()
     if a.cmd == "intel":
         return _intel(a.action, a.query, tuple(a.feeds.split(",")), a.target)
     if a.cmd == "metrics":
@@ -162,7 +178,7 @@ def _metrics(watch: float | None, as_json: bool, mon=None, sleep=None) -> int:
             else:
                 if watch and ui.color_enabled():
                     print("\033[H\033[2J", end="")
-                ui.gb10_panel(snap.mem_total_gb, snap.mem_used_gb, ports)
+                ui.gb10_panel(snap.mem_total_gb, snap.mem_used_gb, ports, _sandbox_line())
             if not watch:
                 return 0 if any(p.up for p in snap.ports) else 1
             sleep(watch)

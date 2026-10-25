@@ -1,5 +1,6 @@
 """cli.py: metrics exit codes / JSON shape / watch priming, status home check, backend choice."""
 import json
+import os
 
 import pytest
 
@@ -28,7 +29,7 @@ def plain(monkeypatch):
 @pytest.mark.parametrize("up,code", [(True, 0), (False, 1)])
 def test_metrics_single_shot_exit_code(capsys, up, code):
     assert cli._metrics(None, False, mon=FakeMonitor(up)) == code
-    assert ("1/1 up" if up else "DOWN URLError") in capsys.readouterr().out
+    assert ("tok/s" if up else "DOWN URLError") in capsys.readouterr().out
 
 
 def test_metrics_json_shape(capsys):
@@ -80,3 +81,17 @@ def test_backend_honours_wreckless_sandbox(monkeypatch, env, available, expected
         monkeypatch.setenv("WRECKLESS_SANDBOX", env)
     monkeypatch.setattr(sandbox, "openshell_available", lambda: available)
     assert cli._backend() == expected
+
+
+def test_load_env_sets_missing_names_only(tmp_path, monkeypatch):
+    from wreckless.config import load_env
+    f = tmp_path / ".env"
+    f.write_text("# c\nexport A_TOKEN=abc\nB_QUOTED='x y'\nC_KEEP=new\nbad line\n=nokey\n")
+    monkeypatch.setenv("C_KEEP", "shell")
+    for k in ("A_TOKEN", "B_QUOTED"):
+        monkeypatch.delenv(k, raising=False)
+    assert load_env(f) == ["A_TOKEN", "B_QUOTED"]
+    assert os.environ["A_TOKEN"] == "abc" and os.environ["B_QUOTED"] == "x y" and os.environ["C_KEEP"] == "shell"
+    for k in ("A_TOKEN", "B_QUOTED"):
+        monkeypatch.delenv(k)
+    assert load_env(tmp_path / "missing") == []

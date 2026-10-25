@@ -185,7 +185,7 @@ def test_mascot_and_tool_calls_record_the_task(capsys):
     try:
         ui.mascot("red")
         ui.mascot("blue", "test")
-        ui.tool_call("red", "sandbox_exec", "script_path='x.py'")
+        ui.tool_call("red", "sandbox_exec", {"script_path": "x.py"})
         ui.tool_call("red", "unknown_tool", "")
     finally:
         ui.SINK = None
@@ -194,4 +194,63 @@ def test_mascot_and_tool_calls_record_the_task(capsys):
     assert ("red", "task", {"task": "sandbox"}) in seen
     assert sum(k == "task" for _, k, _ in seen) == 1
     out = capsys.readouterr().out
-    assert "building exploit" in out and "tool → sandbox_exec" in out
+    assert "building exploit" in out and "RUN" in out and "sandbox_exec" in out and "x.py" in out
+
+
+def test_each_tool_class_renders_its_own_way(capsys, monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    ui.tool_call("red", "read_file", {"path": "victim/a.py"})
+    ui.tool_result("red", "read_file", "l1\nl2\nl3")
+    ui.tool_call("red", "write_file", {"path": "repro_exploit.py", "content": "import os\nprint(1)"})
+    ui.tool_result("red", "write_file", "wrote repro_exploit.py (18 bytes)")
+    ui.tool_call("blue", "edit_file", {"path": "v.py", "old": "eval(x)", "new": "ast.literal_eval(x)"})
+    ui.tool_call("blue", "git_apply_patch", {"diff": "--- a/x\n+++ b/x\n-a\n+b"})
+    ui.tool_call("blue", "run_pytest", {"test_file": "tests"})
+    ui.tool_result("blue", "run_pytest", "x\n12 passed in 0.1s")
+    ui.tool_call("red", "sandbox_exec", {"script_path": "repro_exploit.py"})
+    ui.tool_result("red", "sandbox_exec", "[openshell] VERIFIED-ELIGIBLE (oracle written via victim code)\nout")
+    ui.tool_call("red", "mystery", {"a": 1})
+    ui.think("red", "I should read the file first")
+    out = capsys.readouterr().out
+    for want in ("READ", "3 lines", "WRITE", "import os", "EDIT", "- eval(x)", "+ ast.literal_eval(x)", "PATCH",
+                 "+b", "TEST", "12 passed", "RUN", "VERIFIED-ELIGIBLE", "TOOL", "mystery", "I should read"):
+        assert want in out, want
+
+
+def test_failing_pytest_and_errors_are_red(monkeypatch):
+    buf = _TTY()
+    monkeypatch.setattr("sys.stdout", buf)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    ui.tool_result("blue", "run_pytest", "FAILED t\n1 failed, 3 passed in 0.2s")
+    ui.tool_result("red", "read_file", "ERROR: path escapes worktree")
+    out = buf.getvalue()
+    assert ui.RED + "1 failed, 3 passed" in out and ui.RED + "ERROR: path escapes" in out
+
+
+def test_tool_events_replay_through_the_same_renderer(tmp_path, capsys):
+    from wreckless.events import EventLog, replay
+    EventLog(tmp_path / "events.jsonl").attach()
+    capsys.readouterr()
+    try:
+        ui.tool_call("red", "write_file", {"path": "p.py", "content": "print(1)"})
+        ui.tool_result("red", "write_file", "wrote p.py (8 bytes)")
+        ui.think("red", "done thinking")
+    finally:
+        ui.SINK = None
+    live = capsys.readouterr().out
+    replay(tmp_path / "events.jsonl", speed=0)
+    out = capsys.readouterr().out
+    assert "WRITE" in live and "WRITE" in out and "print(1)" in out and "done thinking" in out
+
+
+def test_step_line_shows_model_context_fill_and_rate(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    ui.step("blue", "blue", 5200, 120, 4.0, 16384)
+    out = capsys.readouterr().out
+    assert "blue · ctx 5.2k/16k · 120 out · 30 tok/s" in out
+    buf = _TTY()
+    monkeypatch.setattr("sys.stdout", buf)
+    monkeypatch.delenv("NO_COLOR")
+    ui.step("blue", "blue", 15000, 10, 0.0, 16384)       # 92% full, too quick to give a rate
+    assert ui.RED + "ctx 15.0k/16k" in buf.getvalue()

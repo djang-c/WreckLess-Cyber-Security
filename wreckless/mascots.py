@@ -150,10 +150,14 @@ TASKS = {  # labels fit LABEL_W
     "verify":   ("cap", "clipboard", "re-checking (nonce)"),
     "patch":    ("hardhat", "wrench", "patching"),
     "test":     ("goggles", "flask", "running tests"),
-    "notify":   ("none", "envelope", "delivering the PR"),
+    "notify":   ("none", "envelope", "sending the card"),
     "done":     ("party", "confetti", "done!"),
 }
 LABEL_W = 20
+SHORT = {  # <= 12 chars: used when the pane is too narrow for the full labels (W-wide sprites)
+    "idle": "asleep", "intel": "scouting", "read": "reading", "exploit": "exploiting", "sandbox": "detonating",
+    "verify": "re-checking", "patch": "patching", "test": "testing", "notify": "sending", "done": "done!",
+}
 STAGE_TASK = {"purple": "intel", "red": "exploit", "gate": "verify", "blue": "patch", "core": "notify"}
 TASK_OF = {  # agent tool name -> task
     "read_file": "read", "write_file": "exploit", "git_checkout": "read",
@@ -326,13 +330,13 @@ def render(grid: list[list], mode: str | None = None) -> list[str]:
 
 
 def frame(role: str, task: str = "idle", mood: str = "idle", t: float | None = None,
-          mode: str | None = None) -> list[str]:
+          mode: str | None = None, label_w: int = LABEL_W) -> list[str]:
     """Sprite lines plus a status line, for time ``t`` (default: now)."""
     t = time.time() if t is None else t
     lines = render(pixels(role, task, mood, t), mode)
     spin = SPINNER[int(t * 10) % len(SPINNER)] if mood in ("work", "think") else " "
-    label = TASKS[task][2]
-    lines.append(f"{spin} {label}"[:LABEL_W + 2])
+    label = TASKS[task][2] if label_w >= LABEL_W else SHORT[task]
+    lines.append(f"{spin} {label}"[:label_w + 2])
     return lines
 
 
@@ -360,7 +364,10 @@ STORY = {
     "blue":   [("idle", "idle", 10), ("patch", "work", 2), ("test", "work", 2), ("done", "happy", 2)],
     "core":   [("idle", "idle", 12), ("notify", "work", 2), ("done", "happy", 2)],
 }
-NAMES = {"purple": "PURPLE", "red": "RED", "gate": "GATE", "blue": "BLUE", "core": "CORE"}
+NAMES = {"purple": "SCOUT", "red": "RALPH", "gate": "VERIFIER", "blue": "FELIX", "core": "CONDUCTOR"}
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _at(story, t):
@@ -372,14 +379,14 @@ def _at(story, t):
     return story[-1][:2]
 
 
-def _row(states: dict, t: float, mode: str) -> list[str]:
+def _row(states: dict, t: float, mode: str, label_w: int = LABEL_W) -> list[str]:
     blocks = []
     for role, (task, mood) in states.items():
-        b = frame(role, task, mood, t, mode)
+        b = frame(role, task, mood, t, mode, label_w)
         color = ROLE_COLORS[role][0]
         tag = NAMES[role] if mode == "none" else f"\033[1;{_fg(color, mode)}m{NAMES[role]}\033[0m"
         blocks.append([tag] + b)
-    return side_by_side(blocks, gap=2, widths=[LABEL_W + 2] * len(blocks))
+    return side_by_side(blocks, gap=2, widths=[label_w + 2] * len(blocks))
 
 
 def preview(animate: bool = False, seconds: float = 32, fps: int = 10) -> None:
@@ -456,6 +463,7 @@ def watch(events, roles: list[str] | None = None, fps: int = 10) -> None:
         print("the flock view needs a colour terminal (unset NO_COLOR or set FORCE_COLOR)")
         return
     path, flock, pos = Path(events), Flock(), 0
+    prev, prev_shape = [], None
     roles = roles or list(ROLE_COLORS)
     sys.stdout.write("\033[?1049h\033[?25l")  # alternate screen, hidden cursor
     try:
@@ -474,12 +482,27 @@ def watch(events, roles: list[str] | None = None, fps: int = 10) -> None:
             t = time.time()
             states = flock.now(t)
             cols = shutil.get_terminal_size((80, 24)).columns
-            per = max(1, (cols + 2) // (LABEL_W + 4))
+            # one row if every bird fits: shrink the label column down to the sprite width (W) first
+            label_w = max(W - 2, min(LABEL_W, (cols + 2) // len(roles) - 4))
+            per = max(1, (cols + 2) // (label_w + 4))
             lines = []
             for k in range(0, len(roles), per):
-                lines += _row({r: states[r] for r in roles[k:k + per]}, t, mode) + [""]
-            sys.stdout.write("\033[H" + "".join(f"{ln}\033[K\n" for ln in lines) + "\033[J")
-            sys.stdout.flush()
+                row = _row({r: states[r] for r in roles[k:k + per]}, t, mode, label_w)
+                pad = " " * max(0, (cols - max(len(_ANSI.sub("", ln)) for ln in row)) // 2)
+                lines += [pad + ln for ln in row] + [""]
+            # repaint only the lines that changed: rewriting the whole screen 10x a second makes
+            # terminal hover widgets (tooltips, link detection) flicker
+            if (cols, len(lines)) != prev_shape:
+                out, prev = ["\033[2J"], []
+            else:
+                out = []
+            for i, ln in enumerate(lines):
+                if i >= len(prev) or prev[i] != ln:
+                    out.append(f"\033[{i + 1};1H{ln}\033[K")
+            if out:
+                sys.stdout.write("".join(out))
+                sys.stdout.flush()
+            prev, prev_shape = lines, (cols, len(lines))
             time.sleep(1 / fps)
     except KeyboardInterrupt:
         pass

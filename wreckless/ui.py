@@ -25,11 +25,11 @@ from wreckless import mascots
 
 RESET = "\033[0m"
 ROLES = {  # single-width icons only: emoji widths break alignment in tmux panes
-    "purple": ("\033[1;35m", "●", "PURPLE"),
-    "red": ("\033[1;31m", "▲", "RED"),
-    "blue": ("\033[1;34m", "■", "BLUE"),
-    "gate": ("\033[1;33m", "◆", "VERIFY-GATE"),
-    "core": ("\033[1;37m", "▬", "NEMOCLAW"),
+    "purple": ("\033[1;35m", "●", "SCOUT"),
+    "red": ("\033[1;31m", "▲", "RALPH"),
+    "blue": ("\033[1;34m", "■", "FELIX"),
+    "gate": ("\033[1;33m", "◆", "VERIFIER"),
+    "core": ("\033[1;37m", "▬", "CONDUCTOR"),
 }
 
 BOLD, DIM = "\033[1m", "\033[2m"
@@ -44,17 +44,17 @@ _UNSAFE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[0-9;?]*[ -/]*[@
 _LOCK = threading.RLock()  # worker threads share stdout; multi-line panels must not interleave
 
 CAPTIONS = {
-    "purple": "intel analyst · reads the advisory, forms the hypothesis",
+    "purple": "intel scout · reads the advisory, forms the hypothesis",
     "red": "exploit crafter · proves the bug is real, in the sandbox",
     "blue": "patch engineer · fixes it, then the orchestrator checks it",
-    "gate": "verify gate · fresh nonce, oracle must be hit from victim code",
-    "core": "orchestrator · candidate queue + per-item lifecycle",
+    "gate": "verifier · fresh nonce, oracle must be hit from victim code",
+    "core": "conductor · candidate queue + per-item lifecycle",
 }
 
 # Set by EventLog so terminal output can be replayed later: (role, kind, **data) -> None.
 SINK = None
 REPLAYABLE = {"say", "detail", "banner", "mascot", "intrusion", "diff", "scoreboard",
-              "patch_validated", "notified"}
+              "patch_validated", "notified", "tool", "result", "think", "step"}
 
 
 def _emit(role: str, kind: str, **data) -> None:
@@ -151,11 +151,128 @@ def mascot(role: str, task: str | None = None, _record: bool = True) -> None:
         _emit(role, "mascot", task=task)
 
 
-def tool_call(role: str, name: str, args: str) -> None:
-    """An agent's tool use: one trace line, plus a ``task`` event so ``view`` swaps the hat."""
-    say(role, f"tool → {name}({args})")
-    if name in mascots.TASK_OF:
-        _emit(role, "task", task=mascots.TASK_OF[name])
+# Tool use looks different per class: a coloured chip, then arguments and result shaped to match.
+# name -> (class, chip label); unknown tools fall back to a plain TOOL chip.
+TOOLS = {
+    "read_file": ("read", "READ"), "git_checkout": ("read", "CHECKOUT"),
+    "write_file": ("write", "WRITE"), "edit_file": ("write", "EDIT"), "git_apply_patch": ("write", "PATCH"),
+    "sandbox_exec": ("run", "RUN"), "run_exploit": ("run", "RUN"),
+    "run_pytest": ("test", "TEST"), "generate_openshell_egress_rule": ("write", "POLICY"),
+}
+CHIP = {  # class -> reverse-video chip colour (fg on bg)
+    "read": "\033[30;46m", "write": "\033[30;42m", "run": "\033[30;43m",
+    "test": "\033[30;45m", "tool": "\033[30;47m",
+}
+ARG_LIMIT = 1500   # recorded/printed size of one tool argument (a whole exploit script fits)
+
+
+def _chip(cls: str, label: str) -> str:
+    return _c(CHIP[cls], f" {label} ")
+
+
+def _args(args) -> dict:
+    """``args`` as a dict; an older recording (or a caller) may hold the pre-formatted string."""
+    return dict(args) if isinstance(args, dict) else {"": str(args)}
+
+
+def _lines(role: str, text: str, limit: int, style: str = "") -> None:
+    color = ROLES[role][0]
+    lines = text.splitlines() or [""]
+    with _LOCK:
+        for ln in lines[:limit]:
+            _out(f"{_c(color, '   │')} {_c(style, ln) if style else ln}")
+        if len(lines) > limit:
+            _out(f"{_c(color, '   │')} {_c(DIM, f'… {len(lines) - limit} more lines')}")
+
+
+def tool_call(role: str, name: str, args, _record: bool = True) -> None:
+    """An agent's tool use: a header line per class (+ the code/diff it carries), plus a ``task``
+    event so ``view`` swaps the hat."""
+    cls, label = TOOLS.get(name, ("tool", "TOOL"))
+    a = _args(args)
+    if _record:
+        _emit(role, "tool", name=name, args={k: str(v)[:ARG_LIMIT] for k, v in a.items()})
+        if name in mascots.TASK_OF:
+            _emit(role, "task", task=mascots.TASK_OF[name])
+    path = a.get("path") or a.get("script_path") or a.get("test_file") or a.get("branch") or a.get("domain")
+    if name in ("read_file", "git_checkout", "run_pytest", "generate_openshell_egress_rule") or \
+            (name == "sandbox_exec" and path):
+        head = str(path or "")
+    elif name == "write_file":
+        size = len(str(a.get("content", "")))
+        head = f"{path}  {_c(DIM, f'{size} chars')}"
+    elif name == "edit_file":
+        head = str(path or "")
+    elif name in ("run_exploit", "sandbox_exec"):
+        head = _c(DIM, "the exploit against the victim")
+    elif name == "git_apply_patch":
+        head = _c(DIM, "applying a diff")
+    else:
+        head = ", ".join(f"{k}={str(v)[:60]!r}" if k else str(v) for k, v in a.items())
+    say(role, f"{_chip(cls, label)} {_c(BOLD, name)} {head}".rstrip(), _record=False)
+    # what the call carries: code for a write, old/new for an edit, the diff for a patch
+    if name == "write_file" and a.get("content"):
+        _lines(role, str(a["content"])[:ARG_LIMIT], 14, GREEN)
+    elif name == "edit_file":
+        _lines(role, "- " + str(a.get("old", ""))[:400].replace("\n", "\n- "), 6, RED)
+        _lines(role, "+ " + str(a.get("new", ""))[:400].replace("\n", "\n+ "), 6, GREEN)
+    elif name == "git_apply_patch":
+        diff(role, str(a.get("diff") or a.get("patch") or ""), limit=ARG_LIMIT, _record=False)
+
+
+_VERDICT = [  # (text found in a run result, colour): good news green, near-misses amber, bad red
+    ("VERIFIED-ELIGIBLE", GREEN), ("BLOCKED", GREEN), ("NOT ELIGIBLE", "\033[1;33m"),
+    ("NOT CONFIRMED", "\033[1;33m"), ("STILL EXPLOITABLE", RED), ("ORACLE NOT REACHED", "\033[1;33m"),
+]
+
+
+def tool_result(role: str, name: str, out: str, _record: bool = True) -> None:
+    """What the tool returned, shaped by class; errors are always red."""
+    if _record:
+        _emit(role, "result", name=name, text=out[:ARG_LIMIT])
+    cls, _ = TOOLS.get(name, ("tool", "TOOL"))
+    out = out.rstrip()
+    first, _, rest = out.partition("\n")
+    if out.startswith("ERROR"):
+        _lines(role, out, 4, RED)
+    elif cls == "read":
+        n = len(out.splitlines())
+        _lines(role, f"{n} line{'s' if n != 1 else ''} · {first[:80]}", 1, DIM)
+    elif cls == "write":
+        _lines(role, out, 2, GREEN)
+    elif cls == "run":
+        color = next((c for word, c in _VERDICT if word in first), "")
+        _lines(role, first, 1, color)
+        if rest.strip():
+            _lines(role, rest[-ARG_LIMIT:], 8, DIM)
+    elif cls == "test":
+        tail = [ln for ln in out.splitlines() if ln.strip()][-1:] or [""]
+        ok = bool(re.search(r"\bpassed\b", tail[0])) and not re.search(r"\b(failed|error)", tail[0])
+        _lines(role, tail[0], 1, GREEN if ok else RED)
+        if not ok:
+            _lines(role, "\n".join(out.splitlines()[-9:-1]), 8, DIM)
+    else:
+        detail(role, out, limit=400, _record=False)
+
+
+def step(role: str, model: str, prompt_tokens: int, out_tokens: int, secs: float, limit: int | None,
+         _record: bool = True) -> None:
+    """One model step's cost: which model, how full its context window is, tokens/sec.
+    ctx turns amber past 70% and red past 90%: at the limit the model starts losing the task."""
+    if _record:
+        _emit(role, "step", model=model, prompt_tokens=prompt_tokens, out_tokens=out_tokens, secs=secs, limit=limit)
+    fill = prompt_tokens / limit if limit else None
+    ctx = f"ctx {prompt_tokens / 1000:.1f}k" + (f"/{limit // 1024}k" if limit else "")
+    hot = "" if fill is None or fill < 0.7 else ("\033[1;33m" if fill < 0.9 else RED)
+    rate = f" · {out_tokens / secs:.0f} tok/s" if secs > 0.2 and out_tokens else ""
+    _lines(role, f"{model} · {_c(hot, ctx) if hot else ctx} · {out_tokens} out{rate}", 1, DIM)
+
+
+def think(role: str, text: str, _record: bool = True) -> None:
+    """What the model said between tool calls: dim and short, so actions stay the focus."""
+    if _record:
+        _emit(role, "think", text=text[:ARG_LIMIT])
+    _lines(role, "“" + text.strip()[:ARG_LIMIT] + "”", 4, DIM)
 
 
 def transition(item: str, frm: str, to: str, actor: str, ts: float | None = None) -> None:
@@ -281,32 +398,71 @@ def _bar(frac: float, width: int) -> str:
     return "█" * n + "░" * (width - n)
 
 
-def gb10_panel(mem_total_gb: float, mem_used_gb: float, ports: list[dict]) -> None:
-    """GB10 unified-memory + per-port throughput panel. ``ports`` are ``metrics.PortStats`` dicts;
-    a down port is shown as DOWN, tokens/sec as '—' until there are two samples.
+def _fit(label: str, ckpt: str, stats: list[str], width: int) -> str:
+    """One panel row: label, checkpoint, then stats. The checkpoint takes the slack. If it doesn't
+    fit whole, the least important stats (last in the list, down to the first three) go first,
+    then the pinned revision, then the tail of the name."""
+    stats = list(stats)
+
+    def room() -> int:
+        tail = "  ".join(stats)
+        return width - len(label) - len(strip_ansi(tail)) - (2 if tail else 0) - 1
+
+    while room() < len(ckpt) and len(stats) > 3:
+        stats.pop()
+    if len(ckpt) > room():
+        ckpt = ckpt.split("@")[0]
+    if len(ckpt) > room():
+        ckpt = ckpt[:max(1, room() - 1)] + "…"
+    return f"{label} {ckpt:<{max(0, room())}}  " + "  ".join(stats)
+
+
+def gb10_panel(mem_total_gb: float, mem_used_gb: float, ports: list[dict], sandbox: str | None = None) -> None:
+    """GB10 unified-memory + per-port panel: one row per served model (checkpoint, context window,
+    KV use, tokens/sec). ``ports`` are ``metrics.PortStats`` dicts; a down port is shown as DOWN,
+    tokens/sec as '—' until there are two samples. The panel fits the terminal (rows drop the
+    least important stats rather than wrap) and is centred in a live pane.
     Live-only: ``wreckless metrics`` runs outside a swarm, so the panel is never recorded/replayed."""
-    inner = 62
+    live = sys.stdout.isatty()
+    cols = shutil.get_terminal_size().columns if live else 80
+    inner = max(70, min(cols - 2, 112)) if live else 78
+    pad = " " * (max(0, (cols - inner - 2) // 2) if live else 3)
     used = mem_used_gb / mem_total_gb if mem_total_gb else 0
-    up = [p for p in ports if p.get("up")]
+    tag = lambda p: f":{p['port']} {p['role']}"  # noqa: E731
+    name_w = max((len(tag(p)) for p in ports), default=0)
 
     def row(text: str) -> None:  # pad by visible width so colour codes don't skew the border
-        _out(f"   │ {text}{' ' * max(0, inner - 1 - len(strip_ansi(text)))}│")
+        _out(f"{pad}│ {text}{' ' * max(0, inner - 1 - len(strip_ansi(text)))}│")
+
+    def k(n) -> str:
+        return f"{n / 1024:g}k" if n else "?"
 
     with _LOCK:
-        _out(f"   ┌{' GB10 · unified memory · loopback only '.center(inner, '─')}┐")
+        _out(f"{pad}┌{' GB10 · unified memory · loopback only '.center(inner, '─')}┐")
         row(f"mem {_bar(used, 30)} {mem_used_gb:5.1f}/{mem_total_gb:.0f} GB {used:4.0%}")
+        up = []
         for p in ports:
-            name = f"{p['role']} :{p['port']}"
+            label = f"{tag(p):<{name_w}}"
             if not p.get("up"):
-                row(f"{name:<17} {_c(RED, 'DOWN')} {p.get('error') or ''}")
+                row(f"{label} {_c(RED, 'DOWN')} {p.get('error') or ''}")
                 continue
-            share = f"{p['mem_util'] * mem_total_gb:3.0f} GB" if p.get("mem_util") else "  ? GB"
-            tok = f"{p['tok_s']:6.1f} tok/s" if p.get("tok_s") is not None else "     — tok/s"
-            kv = f"kv {p['kv_usage']:4.0%}" if p.get("kv_usage") is not None else "kv    ?"
-            row(f"{name:<17} {share} {_c(GREEN, tok)}  {kv}  "
-                f"{p.get('running', 0):.0f} run {p.get('waiting', 0):.0f} wait")
-        total_tok = sum(p.get("tok_s") or 0 for p in up)
-        _out(f"   └{'─' * inner}┘  {len(up)}/{len(ports)} up · {total_tok:.1f} tok/s total")
+            tok = f"{p['tok_s']:5.1f} tok/s" if p.get("tok_s") is not None else "    — tok/s"
+            kv = f"kv {p['kv_usage']:3.0%}" if p.get("kv_usage") is not None else "kv   ?"
+            gb = f"{p['mem_util'] * mem_total_gb:3.0f} GB" if p.get("mem_util") else "  ? GB"
+            up.append((label, p.get("ckpt") or p.get("model") or "?",
+                       [f"ctx {k(p.get('ctx'))}", kv, _c(GREEN, tok), gb,
+                        f"{p.get('running', 0):.0f}r/{p.get('waiting', 0):.0f}w"]))
+        # every row shows the same stats, so the columns line up: as many as let the longest
+        # checkpoint stay whole (at least ctx, kv and tokens/sec)
+        n = 5
+        while up and n > 3 and any(len(label) + len(ckpt) + sum(len(strip_ansi(x)) + 2 for x in stats[:n]) + 2
+                                   > inner - 2 for label, ckpt, stats in up):
+            n -= 1
+        for label, ckpt, stats in up:
+            row(_fit(label, ckpt, stats[:n], inner - 2))
+        if sandbox:
+            row(f"{'sandbox':<{name_w}} {sandbox}")
+        _out(f"{pad}└{'─' * inner}┘")
 
 
 def replay_tag(source: str, speed: float, recorded: float | None = None) -> None:

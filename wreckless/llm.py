@@ -1,5 +1,6 @@
 """Tool-calling agent loop against a local OpenAI-compatible (vLLM) endpoint."""
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -47,8 +48,10 @@ def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[
     """Loop until ``is_done()`` (an external oracle) is true, the model stops, or steps run out."""
     client = OpenAI(base_url=ep.url, api_key="local", timeout=600, max_retries=1)
     by_name = {t.name: t for t in tools}
+    limit = _context_window(client)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
     for step in range(max_steps):
+        t0 = time.time()
         try:
             resp = client.chat.completions.create(
                 model=ep.model, messages=messages, tools=[t.schema() for t in tools],
@@ -57,23 +60,30 @@ def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[
         except Exception as e:  # API/transport errors become one type the agents can catch
             raise LLMError(f"{ep.model} at {ep.url}: {type(e).__name__}: {str(e)[:200]}") from e
         messages.append(msg.model_dump(exclude_none=True))
+        if resp.usage:
+            ui.step(role, ep.model, resp.usage.prompt_tokens, resp.usage.completion_tokens, time.time() - t0, limit)
         if msg.content:
-            ui.detail(role, msg.content.strip())
+            ui.think(role, msg.content)
         if not msg.tool_calls:
             return AgentResult(msg.content or "", messages, is_done())
         for call in msg.tool_calls:
             try:
                 args = json.loads(call.function.arguments or "{}")
-                ui.tool_call(role, call.function.name, _short(args))
+                ui.tool_call(role, call.function.name, args)
                 out = by_name[call.function.name].fn(**args)
             except Exception as e:  # tool errors go back to the model, not up the stack
                 out = f"ERROR: {type(e).__name__}: {e}"
-            ui.detail(role, out, limit=400)
+            ui.tool_result(role, call.function.name, out)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": out[:8000]})
         if is_done():
             return AgentResult("oracle satisfied", messages, True)
     return AgentResult("max steps reached", messages, is_done())
 
 
-def _short(args: dict) -> str:
-    return ", ".join(f"{k}={str(v)[:60]!r}" for k, v in args.items())
+
+def _context_window(client: OpenAI) -> int | None:
+    """The server's --max-model-len, for the ctx-fill note; None if it doesn't say."""
+    try:
+        return getattr(client.models.list().data[0], "max_model_len", None)
+    except Exception:  # noqa: BLE001  display only: never fail a run over it
+        return None

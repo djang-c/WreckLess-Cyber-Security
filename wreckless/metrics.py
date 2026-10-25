@@ -5,6 +5,7 @@ nvidia-smi reports memory as [N/A] on the GB10 (unified memory), so the box tota
 `cache_config_info`. Tokens/sec is the delta of the generation-token counter between two samples.
 Stdlib only; a down port is reported as down, never raised (nor is a missing /proc/meminfo).
 """
+import json
 import re
 import time
 import urllib.request
@@ -12,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from wreckless.config import Settings
+from wreckless.config import ROOT, Settings
 
 _LINE = re.compile(r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{(.*)\})?\s+(\S+)')
 _LABEL = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
@@ -58,6 +59,8 @@ class PortStats:
     gen_tokens: float = 0
     prompt_tokens: float = 0
     tok_s: float | None = None           # generation tokens/sec since the previous sample
+    ckpt: str | None = None              # served checkpoint, e.g. Qwen3-Coder-Next-AWQ-4bit@c92cabf
+    ctx: int | None = None               # --max-model-len
     error: str | None = None
 
 
@@ -71,6 +74,33 @@ class Snapshot:
     @property
     def budget_gb(self) -> float:
         return sum((p.mem_util or 0) * self.mem_total_gb for p in self.ports if p.up)
+
+
+def revisions(tsv: Path = ROOT / "scripts" / "models.tsv") -> dict[str, str]:
+    """Pinned revision (7 chars) per checkpoint directory name, from the one model manifest."""
+    out = {}
+    try:
+        lines = tsv.read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        f = line.split()
+        if line.startswith("#") or len(f) < 7:
+            continue
+        out[f[5].rsplit("/", 1)[-1]] = f[6][:7]
+    return out
+
+
+def _checkpoint(root: str, timeout: float) -> tuple[str | None, int | None]:
+    """(checkpoint@rev, max_model_len) from the server's /v1/models; (None, None) if unavailable."""
+    try:
+        with urllib.request.urlopen(f"{root}/v1/models", timeout=timeout) as r:
+            d = json.loads(r.read())["data"][0]
+        name = str(d["root"]).rstrip("/").rsplit("/", 1)[-1]
+        rev = revisions().get(name)
+        return (f"{name}@{rev}" if rev else name), d.get("max_model_len")
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return None, None
 
 
 def port_stats(role: str, base_url: str, timeout: float = 2.0) -> PortStats:
@@ -98,6 +128,7 @@ def port_stats(role: str, base_url: str, timeout: float = 2.0) -> PortStats:
     for name in RUNNING + GEN_TOKENS:
         for labels, _ in m.get(name, []):
             st.model = st.model or labels.get("model_name")
+    st.ckpt, st.ctx = _checkpoint(root, timeout)
     return st
 
 
@@ -126,8 +157,8 @@ class Monitor:
                  clock=time.time):
         s = s or Settings()
         self.clock = clock
-        # Purple and Red share :8000, so it is listed once, as "purple+red"
-        self.endpoints = endpoints or {"blue": s.blue.url, "purple+red": s.red.url,
+        # Scout (Purple) and Ralph (Red) share :8000, so it is listed once, as "scout+ralph"
+        self.endpoints = endpoints or {"felix": s.blue.url, "scout+ralph": s.red.url,
                                        "victim": s.victim.url}
         self._prev: dict[str, tuple[float, float]] = {}
 

@@ -84,8 +84,14 @@ def _render(ev: dict) -> None:
         ui.transition(ev["item"], ev["frm"], ev["to"], actor, ts=t)
     elif kind == "say":
         ui.say(actor, ev["text"], ts=t, _record=False)
-    elif kind in ("detail", "diff"):
+    elif kind in ("detail", "diff", "think"):
         getattr(ui, kind)(actor, ev["text"], _record=False)
+    elif kind == "step":
+        ui.step(actor, ev["model"], ev["prompt_tokens"], ev["out_tokens"], ev["secs"], ev.get("limit"), _record=False)
+    elif kind == "tool":
+        ui.tool_call(actor, ev["name"], ev["args"], _record=False)
+    elif kind == "result":
+        ui.tool_result(actor, ev["name"], ev["text"], _record=False)
     elif kind == "mascot":
         ui.mascot(actor, ev.get("task"), _record=False)
     elif kind == "notified":
