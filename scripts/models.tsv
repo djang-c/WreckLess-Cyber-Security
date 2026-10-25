@@ -8,4 +8,4 @@ red              8000  red                 0.20  qwen3_coder  cyankiwi/Qwen3-Cod
 blue             8001  blue                0.45  qwen3_coder  cyankiwi/Qwen3-Coder-Next-AWQ-4bit                   c92cabfad08cadb011dc169cabb3e6da621b0719
 # BLUE_FALLBACK=1: answers to both names, so Settings.blue and Settings.blue_fallback resolve
 blue-fallback    8001  blue,blue-fallback  0.30  hermes       Qwen/Qwen2.5-Coder-32B-Instruct-AWQ                  1ed0a6145da0ce550c628e8e8b678f51e695995d
--                -     -                   -     -            RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8   main
+-                -     -                   -     -            RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8   bff279eb543e15f7c0e3f922661e66a1b78ac2e0
