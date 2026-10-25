@@ -166,6 +166,35 @@ def test_git_apply_patch_allows_source_fix(tools):
     assert out == "patch applied"
 
 
+# ---------- 3b: small models double-escape newlines in tool-call JSON ----------
+# Observed 2026-10-25, qwen3:8b on Ollama: every edit_file/git_apply_patch arrived with a
+# literal backslash-n instead of a newline, so Blue never applied its (correct) fix.
+
+OLD_ESC = "    try:\\n        return eval(x)\\n    except Exception:\\n        return x"
+
+
+def test_edit_file_accepts_double_escaped_newlines(tools):
+    assert "\\n" in OLD_ESC and "\n" not in OLD_ESC
+    assert tools.edit_file("victim/vector_sql.py", OLD_ESC, "    return x") == "edited victim/vector_sql.py"
+    assert "return eval(x)" not in (tools.wt / "victim" / "vector_sql.py").read_text()
+
+
+def test_edit_file_prefers_exact_match_over_unescaping(tools):
+    f = tools.wt / "victim" / "vector_sql.py"
+    f.write_text(f.read_text() + "\nRAW = 'a\\\\nb'\n")   # file really contains a\\nb
+    assert tools.edit_file("victim/vector_sql.py", "'a\\\\nb'", "'ok'").startswith("edited")
+    assert "RAW = 'ok'" in f.read_text()
+
+
+def test_edit_file_escape_fallback_keeps_path_rules(tools):
+    assert tools.edit_file("tests/conftest.py", "x\\ny", "z").startswith("ERROR")
+
+
+def test_git_apply_patch_accepts_double_escaped_diff_and_patch_kwarg(tools):
+    diff = (BENCHMARKS / "CVE-2024-21513" / "known_good" / "fix.patch").read_text()
+    assert tools.git_apply_patch(patch=diff.replace("\n", "\\n")) == "patch applied"
+
+
 # ---------- 4: no reference-fix hint ----------
 
 def test_blue_prompt_does_not_leak_reference_fix():

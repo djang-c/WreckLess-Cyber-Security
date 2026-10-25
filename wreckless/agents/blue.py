@@ -97,6 +97,10 @@ class Validation:
         return s + (f" · hardening probes: {self.hardening}" if self.hardening else "")
 
 
+def _unescape(s: str) -> str:
+    return s.replace("\\n", "\n").replace("\\t", "\t")
+
+
 class BlueTools:
     def __init__(self, wt: Path, enclave: Enclave, report: dict, item_dir: Path):
         self.wt, self.enclave, self.report, self.dir = wt, enclave, report, item_dir
@@ -115,6 +119,8 @@ class BlueTools:
         return p.read_text() if p.is_file() else f"ERROR: no such file {path}"
 
     def edit_file(self, path: str, old: str, new: str) -> str:
+        """Replace exactly one occurrence. Falls back to unescaping \\n/\\t only if the exact text
+        is absent (small models double-escape newlines in tool-call JSON)."""
         p = self._path(path)
         if not p:
             return "ERROR: path outside repo"
@@ -123,12 +129,17 @@ class BlueTools:
         if not p.is_file():
             return f"ERROR: no such file {path}"
         text = p.read_text()
+        if text.count(old) == 0 and text.count(_unescape(old)) == 1:
+            old, new = _unescape(old), _unescape(new)
         if text.count(old) != 1:
             return f"ERROR: old string found {text.count(old)} times (must be exactly 1)"
         p.write_text(text.replace(old, new))
         return f"edited {path}"
 
-    def git_apply_patch(self, diff: str) -> str:
+    def git_apply_patch(self, diff: str = "", patch: str = "") -> str:
+        diff = diff or patch   # models also call it with patch=...
+        if "\n" not in diff.strip() and "\\n" in diff:
+            diff = _unescape(diff)
         bad = [w for rel in sorted(_diff_paths(diff)) if (w := forbidden(rel))]
         if re.search(r"^(?:new file |new )?mode 120000", diff, re.M):
             bad.append("symlinks may not be created")
