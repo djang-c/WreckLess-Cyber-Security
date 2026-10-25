@@ -79,7 +79,7 @@ def test_missing_held_out_test_is_na_not_fail(capsys):
     """Red-hunt findings have no held-out test: shown n/a, not counted (blue.Validation.ok)."""
     assert ui.scoreboard(None, True, True) is True
     out = capsys.readouterr().out
-    assert "n/a" in out and "2/2 ALL PASS" in out and "FAIL" not in out
+    assert "n/a" in out and "2/2 passed · ALL PASS" in out and "FAIL" not in out
     assert ui.scoreboard(None, True, False) is False
 
 
