@@ -30,6 +30,7 @@ ROLES = {  # single-width icons only: emoji widths break alignment in tmux panes
     "blue": ("\033[1;34m", "■", "FELIX"),
     "gate": ("\033[1;33m", "◆", "VERIFIER"),
     "core": ("\033[1;37m", "▬", "CONDUCTOR"),
+    "porter": ("\033[1;36m", "◇", "PORTER"),
 }
 
 
@@ -63,6 +64,7 @@ CAPTIONS = {
     "blue": "patch engineer · fixes it, then the orchestrator checks it",
     "gate": "verifier · fresh nonce, oracle must be hit from victim code",
     "core": "conductor · candidate queue + per-item lifecycle",
+    "porter": "porter · carries messages through the airlock between Slack and the agents",
 }
 
 # Set by EventLog so terminal output can be replayed later: (role, kind, **data) -> None.

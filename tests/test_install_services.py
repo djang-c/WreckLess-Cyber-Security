@@ -20,7 +20,9 @@ def test_default_install_has_no_airgap_and_never_runs_daemon_as_root():
     assert "wreckless-airgap.service" not in out          # opt-in: it blocks Claude Code on the box
     daemon = out.split("── wreckless-daemon.service ──")[1]
     assert "User=root" not in daemon and "Restart=always" in daemon
-    assert "daemon --slack-listener" in daemon and ". ./.env" in daemon
+    assert "daemon --porter" in daemon and "--slack-listener" not in daemon and ". ./.env" in daemon
+    slack = out.split("── wreckless-slack.service ──")[1].split("──")[0]
+    assert "python -m wreckless.slack_socket" in slack       # the Slack side runs as its own process
     assert "xoxb-" not in out and "xapp-" not in out      # tokens stay in .env, never in a unit
 
 
@@ -40,7 +42,7 @@ def test_every_sudo_step_is_printed():
 @pytest.mark.skipif(not shutil.which("systemd-analyze"), reason="systemd-analyze only on Linux")
 def test_units_pass_systemd_analyze(tmp_path):
     out = dry("--with-airgap")
-    for name in ("wreckless-models", "wreckless-daemon", "wreckless-airgap"):
+    for name in ("wreckless-models", "wreckless-daemon", "wreckless-slack", "wreckless-airgap"):
         unit = out.split(f"── {name}.service ──")[1].split("\n── ")[0].split("\nNOTE:")[0].split("\n+ ")[0]
         f = tmp_path / f"{name}.service"
         f.write_text(unit.strip() + "\n")

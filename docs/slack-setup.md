@@ -30,7 +30,11 @@ oauth_config:
     bot:
       - chat:write
       - chat:write.public   # optional: post to public channels without /invite
+      - app_mentions:read   # Porter: @WreckLess questions, notes and change requests
 settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention         # Porter (Socket Mode delivers it; no request URL)
   interactivity:
     is_enabled: true        # no request_url needed in Socket Mode
   socket_mode_enabled: true
@@ -133,3 +137,21 @@ The daemon runs as your user (not root) and reads `.env` at start, so tokens nev
 Every outcome posts a card: fix ready (Approve/Reject), patch failed (which check, log tail),
 gate rejected (reason; Red-hunt rejections only with `WRECKLESS_SLACK_REJECTS=all`), crashed.
 Only one Socket Mode listener should run per app, so stop any listener on another machine.
+
+
+## 8. Talk to the agents: Porter
+
+Mention the bot in the run channel, ideally in a card's thread (that picks the finding):
+
+```
+@WreckLess why is this dangerous?          answered from the finding's briefing by the local model
+@WreckLess status                          queue counts
+@WreckLess note: this API is internal-only kept as an UNTRUSTED note on the finding
+@WreckLess change: also reject bytes input queues a revision: re-patch, re-verify, new card, Approve
+@WreckLess exploit                         releases the exploit script (only on request; logged)
+```
+
+Only `SLACK_APPROVERS` in `SLACK_CHANNEL` are heard; 10 requests per user per minute.
+Existing app: add the `app_mentions:read` scope and the `app_mention` bot event (manifest above),
+then **reinstall the app** to the workspace. Run the two doors as two processes:
+`python -m wreckless.slack_socket` (outer) and `wreckless daemon --porter` (inner); see `docs/porter.md`.

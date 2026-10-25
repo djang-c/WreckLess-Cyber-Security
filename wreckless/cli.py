@@ -72,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     common(d)
     d.add_argument("--purple-interval", type=float, default=600)
     d.add_argument("--no-hunt", action="store_true")
+    d.add_argument("--porter", action="store_true",
+                   help="Porter's inner door: answer Slack questions/notes/changes via the airlock "
+                        "(run the Slack listener as its own process: python -m wreckless.slack_socket)")
     d.add_argument("--slack-listener", action="store_true",
                    help="serve the card's Approve/Reject buttons (Socket Mode; needs SLACK_APPROVERS)")
 
@@ -137,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         ui.banner(f"WreckLess · {a.cve} · {a.mode} mode{' · demo' if a.demo_mode else ''}")
         ui.say("core", f"home {swarm.home} · target: {swarm.target.name} · enclave: {_backend()}")
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
-    swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener)
+    swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener, porter=a.porter)
     return 0
 
 

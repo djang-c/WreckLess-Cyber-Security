@@ -329,11 +329,37 @@ def print_preflight(ok: bool, rows: list[tuple[str, str, str]]) -> None:
     print("SLACK PREFLIGHT: " + ("PASS (offline check only: nothing was sent)" if ok else "FAIL"))
 
 
-def _build_handler(on_approve, on_reject, runs_dir: Path = ITEMS):
+def register_porter(app, outer=None, stop: threading.Event | None = None, every: float = 1.0):
+    """Porter's outer door: @mentions go into the airlock, replies come back out. Needs the
+    app_mentions:read scope + the app_mention event (docs/slack-setup.md). WRECKLESS_PORTER=0 disables."""
+    if os.environ.get("WRECKLESS_PORTER", "1") == "0":
+        return None
+    from wreckless.porter_outer import Outer
+    outer = outer or Outer()
+
+    def on_mention(event, client):
+        outer.on_mention(event, client)
+
+    app.event("app_mention")(on_mention)
+
+    def deliver() -> None:
+        while not (stop and stop.is_set()):
+            try:
+                outer.deliver(app.client)
+            except Exception as e:  # noqa: BLE001
+                _log(f"porter delivery error: {e}")
+            time.sleep(every)
+
+    threading.Thread(target=deliver, name="porter-outer", daemon=True).start()
+    return outer
+
+
+def _build_handler(on_approve, on_reject, runs_dir: Path = ITEMS, stop: threading.Event | None = None):
     from slack_bolt import App
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     app = App(token=os.environ["SLACK_BOT_TOKEN"])
     register(app, make_handlers(on_approve, on_reject, runs_dir))
+    register_porter(app, stop=stop)
     return SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
 
 
@@ -352,7 +378,7 @@ def start_listener(on_approve: Decision | None = None, on_reject: Decision | Non
             while not handle.stopped.is_set():
                 try:
                     # App() calls auth.test and connect() opens the wss: either can fail
-                    handler = _build_handler(on_approve, on_reject, runs_dir)
+                    handler = _build_handler(on_approve, on_reject, runs_dir, handle.stopped)
                     if not handle.adopt(handler):
                         return
                     handler.connect()  # non-blocking, unlike start()
@@ -386,7 +412,7 @@ def main() -> int:
     if not ok:
         _log(why)
         return 1
-    _log("serving Approve/Reject actions; Ctrl-C to stop")
+    _log("serving Approve/Reject actions and Porter's outer door; Ctrl-C to stop")
     _build_handler(None, None).start()
     return 0
 

@@ -125,7 +125,7 @@ def test_replay_renders_recorded_beats(tmp_path, capsys, monkeypatch):
 
 
 def test_public_api_unchanged():
-    assert set(ui.ROLES) == {"purple", "red", "blue", "gate", "core"}
+    assert set(ui.ROLES) == {"purple", "red", "blue", "gate", "core", "porter"}
     assert all(len(v) == 3 for v in ui.ROLES.values())
     for fn in ("say", "detail", "banner", "mascot", "scoreboard"):
         assert callable(getattr(ui, fn))

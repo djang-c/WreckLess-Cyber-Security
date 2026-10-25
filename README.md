@@ -142,6 +142,8 @@ Approve records the sign-off on that exact commit and, if configured, opens a **
 nothing is merged automatically.
 `scripts/install_services.sh` installs systemd units so models and daemon restart on boot. See [`docs/operations.md`](docs/operations.md).
 
+🩵 **Porter** lets approvers talk to the agents from Slack (`@WreckLess why is this dangerous?`, `note:`, `change:`, `exploit`) through an airlock: the Slack-side process never touches the code, the model answers from a briefing only, and a change request is re-patched, re-verified and approved like any fix. See [`docs/porter.md`](docs/porter.md).
+
 ---
 
 ## Results

@@ -31,6 +31,7 @@ ROLE_COLORS = {
     "blue":   ((96, 165, 250), (30, 64, 175)),
     "gate":   ((251, 191, 36), (146, 64, 14)),
     "core":   ((148, 163, 184), (51, 65, 85)),
+    "porter": ((45, 212, 191), (17, 94, 89)),
 }
 INK = {
     "K": (100, 110, 135), "w": (248, 250, 252), "g": (148, 163, 184), "G": (71, 85, 105),
@@ -80,6 +81,15 @@ SHAPES = {
         "SBBBBBBBB.....",
         ".BBBBBBBB.....",
         "..S....S......",
+    ]},
+    "porter": {"eyes": ((1, 4), (1, 7)), "hat": (0, 1), "body": [
+        "..BBBBBB......",
+        ".BBBBBBBB.....",
+        ".BBBBBBBBO....",
+        ".BBBBBBBB.....",
+        "SBBBBBBBB.....",
+        "SS.BBBBB......",
+        "...S..S.......",
     ]},
     "core": {"eyes": ((2, 5), (2, 7)), "hat": (1, 1), "body": [
         "..............",
@@ -152,13 +162,17 @@ TASKS = {  # labels fit LABEL_W
     "test":     ("goggles", "flask", "running tests"),
     "notify":   ("none", "envelope", "sending the card"),
     "done":     ("party", "confetti", "done!"),
+    "outer":    ("none", "envelope", "at the Slack door"),
+    "inner":    ("cap", "page", "at the agents' door"),
 }
 LABEL_W = 20
 SHORT = {  # <= 12 chars: used when the pane is too narrow for the full labels (W-wide sprites)
     "idle": "asleep", "intel": "scouting", "read": "reading", "exploit": "exploiting", "sandbox": "detonating",
     "verify": "re-checking", "patch": "patching", "test": "testing", "notify": "sending", "done": "done!",
+    "outer": "Slack door", "inner": "agents' door",
 }
-STAGE_TASK = {"purple": "intel", "red": "exploit", "gate": "verify", "blue": "patch", "core": "notify"}
+STAGE_TASK = {"purple": "intel", "red": "exploit", "gate": "verify", "blue": "patch", "core": "notify",
+              "porter": "outer"}
 TASK_OF = {  # agent tool name -> task
     "read_file": "read", "write_file": "exploit", "git_checkout": "read",
     "sandbox_exec": "sandbox", "edit_file": "patch", "git_apply_patch": "patch",
@@ -364,7 +378,8 @@ STORY = {
     "blue":   [("idle", "idle", 10), ("patch", "work", 2), ("test", "work", 2), ("done", "happy", 2)],
     "core":   [("idle", "idle", 12), ("notify", "work", 2), ("done", "happy", 2)],
 }
-NAMES = {"purple": "SCOUT", "red": "RALPH", "gate": "VERIFIER", "blue": "FELIX", "core": "CONDUCTOR"}
+NAMES = {"purple": "SCOUT", "red": "RALPH", "gate": "VERIFIER", "blue": "FELIX", "core": "CONDUCTOR",
+         "porter": "PORTER"}
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")

@@ -12,8 +12,10 @@
 #
 # Units (written to /etc/systemd/system):
 #   wreckless-models.service  oneshot: scripts/serve_models.sh all (stop: serve_models.sh stop)
-#   wreckless-daemon.service  `wreckless daemon --slack-listener`, as you (not root), Restart=always,
-#                             env from ./.env (SLACK_*, WRECKLESS_GITHUB_REPO)
+#   wreckless-daemon.service  `wreckless daemon --porter` (agents + Porter's inner door), as you,
+#                             Restart=always, env from ./.env (WRECKLESS_GITHUB_REPO, ...)
+#   wreckless-slack.service   the Slack listener (Approve/Reject + Porter's outer door) as its OWN
+#                             process: the Slack side and the agents never share a process
 #   wreckless-airgap.service  oneshot as root: airgap_lockdown.sh on (stop: off)   [--with-airgap]
 # Logs: journalctl -u wreckless-daemon -f   ·   status: systemctl status 'wreckless-*'
 set -euo pipefail
@@ -34,7 +36,7 @@ done
 RUN_USER=${SUDO_USER:-$(id -un)}
 RUN_HOME=$(eval echo "~$RUN_USER")
 UV=$(command -v uv || true)
-UNITS=(wreckless-models wreckless-daemon)
+UNITS=(wreckless-models wreckless-daemon wreckless-slack)
 [[ $AIRGAP == 1 ]] && UNITS+=(wreckless-airgap)
 DEST=/etc/systemd/system
 
@@ -79,7 +81,7 @@ unit_daemon() {
   [[ $AIRGAP == 1 ]] && after+=" wreckless-airgap.service"
   cat <<EOF
 [Unit]
-Description=WreckLess daemon (Purple/Red/Blue + Slack Approve/Reject)
+Description=WreckLess daemon (Scout/Ralph/Verifier/Felix + Porter's inner door)
 Wants=${after}
 After=${after}
 StartLimitIntervalSec=0
@@ -91,7 +93,30 @@ Environment=HOME=$RUN_HOME
 Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
 # .env uses 'export KEY=value', which EnvironmentFile= cannot read; tokens never enter the unit
-ExecStart=/bin/bash -c 'set -a; . ./.env; set +a; exec "$UV" run --all-extras wreckless daemon --slack-listener'
+ExecStart=/bin/bash -c 'set -a; . ./.env; set +a; exec "$UV" run --all-extras wreckless daemon --porter'
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+unit_slack() {
+  cat <<EOF
+[Unit]
+Description=WreckLess Slack listener (Approve/Reject + Porter's outer door; outbound wss only)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=$RUN_USER
+WorkingDirectory=$REPO
+Environment=HOME=$RUN_HOME
+Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -c 'set -a; . ./.env; set +a; exec "$UV" run --all-extras python -m wreckless.slack_socket'
 Restart=always
 RestartSec=15
 
@@ -123,7 +148,7 @@ EOF
 
 if [[ $UNINSTALL == 1 ]]; then
   ask "Stop, disable and remove wreckless-*.service?" || exit 1
-  for u in wreckless-daemon wreckless-airgap wreckless-models; do
+  for u in wreckless-slack wreckless-daemon wreckless-airgap wreckless-models; do
     run sudo systemctl disable --now "$u.service" 2>/dev/null || true
     run sudo rm -f "$DEST/$u.service"
   done
