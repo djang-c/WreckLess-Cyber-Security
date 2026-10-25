@@ -89,8 +89,60 @@ def test_custom_approve_callback_error_does_not_raise(acks):
 
     slack_socket.make_handlers(on_approve=bad)[APPROVE_ACTION](
         ack=ack, body=action_body(APPROVE_ACTION), client=client)
-    text = client.updates[0]["blocks"][-1]["text"]["text"]
-    assert "could not be recorded" in text and "merge bot offline" not in text  # no internals on the card
+    assert not client.updates                       # card keeps its buttons: nothing was recorded
+    text = client.ephemeral[0]["text"]
+    assert "could not be recorded" in text and "merge bot offline" not in text  # no internals in Slack
+
+
+def test_save_failure_keeps_buttons_and_retry_works(tmp_path, acks, monkeypatch):
+    client = FakeClient()
+    h = slack_socket.make_handlers(runs_dir=tmp_path)
+    real_link = slack_socket.os.link
+    monkeypatch.setattr(slack_socket.os, "link", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+    h[APPROVE_ACTION](ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
+    assert not client.updates and "could not be recorded" in client.ephemeral[0]["text"]
+    assert not (tmp_path / RUN_DIR / "decision.json").exists()
+    assert list((tmp_path / RUN_DIR).iterdir()) == []   # temp file cleaned up
+    monkeypatch.setattr(slack_socket.os, "link", real_link)
+    h[APPROVE_ACTION](ack=acks[1], body=action_body(APPROVE_ACTION), client=client)
+    assert "Approved by <@U123>" in client.updates[0]["blocks"][-1]["text"]["text"]
+
+
+def test_unsafe_run_id_with_default_callback_keeps_buttons(tmp_path, acks):
+    client = FakeClient()
+    body = action_body(APPROVE_ACTION, value=json.dumps({"run_id": "../../etc", "commit": COMMIT}))
+    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](ack=acks[1], body=body, client=client)
+    assert not client.updates and "could not be recorded" in client.ephemeral[0]["text"]
+
+
+def test_concurrent_clicks_record_one_decision_and_report_it(tmp_path, acks, monkeypatch):
+    """Two approvers click at once: exactly one decision lands; the loser is told the real one."""
+    import threading
+    h = slack_socket.make_handlers(runs_dir=tmp_path)
+    clients = {"U123": FakeClient(), "U456": FakeClient()}
+    barrier = threading.Barrier(2)
+    real_mkstemp = slack_socket.tempfile.mkstemp
+
+    def synced(*a, **k):
+        out = real_mkstemp(*a, **k)
+        barrier.wait(timeout=5)                     # both past the exists() check, both writing
+        return out
+
+    monkeypatch.setattr(slack_socket.tempfile, "mkstemp", synced)
+    threads = [threading.Thread(target=h[APPROVE_ACTION if u == "U123" else REJECT_ACTION],
+                                kwargs={"ack": acks[1], "client": c,
+                                        "body": action_body(APPROVE_ACTION if u == "U123" else REJECT_ACTION, user=u)})
+               for u, c in clients.items()]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    rec = json.loads((tmp_path / RUN_DIR / "decision.json").read_text())
+    winner = clients[rec["user"]]
+    loser = clients["U456" if rec["user"] == "U123" else "U123"]
+    assert len(winner.updates) == 1 and not loser.updates
+    assert f"already {rec['decision']} by <@{rec['user']}>" in loser.ephemeral[0]["text"]
+    assert [p.name for p in (tmp_path / RUN_DIR).iterdir()] == ["decision.json"]
 
 
 def test_handler_survives_garbage_body_and_client_failure(acks):
@@ -178,17 +230,86 @@ def test_missing_slack_bolt_disables_listener(monkeypatch, capsys):
     assert "slack_bolt not installed" in capsys.readouterr().err
 
 
-def test_listener_runs_in_daemon_thread_and_swallows_errors(monkeypatch, capsys):
-    pytest.importorskip("slack_bolt")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-x")
-    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-x")
+class FakeHandler:
+    def __init__(self, fail_connect=False):
+        self.fail_connect, self.connected, self.closed = fail_connect, False, False
 
-    def boom(*a):
-        raise RuntimeError("invalid_auth")
+    def connect(self):
+        if self.fail_connect:
+            raise ConnectionError("apps.connections.open failed")
+        self.connected = True
 
-    monkeypatch.setattr(slack_socket, "_build_handler", boom)  # no network in tests
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def fake_bolt(monkeypatch):
+    monkeypatch.setattr(slack_socket, "_enabled", lambda: (True, "enabled"))  # no slack_bolt, no network
+    monkeypatch.setattr(slack_socket, "RETRY_FIRST", 0.01)
+    monkeypatch.setattr(slack_socket, "RETRY_MAX", 0.02)
+
+
+def _wait_for(cond, timeout=5.0):
+    import time
+    end = time.monotonic() + timeout
+    while not cond() and time.monotonic() < end:
+        time.sleep(0.01)
+    return cond()
+
+
+def test_listener_retries_and_logs_enabled_only_after_connect(fake_bolt, monkeypatch, capsys):
+    made = []
+
+    def build(*a):
+        made.append(None)
+        if len(made) == 1:
+            raise RuntimeError("invalid_auth")      # App() auth.test fails
+        h = FakeHandler(fail_connect=len(made) == 2)
+        made[-1] = h
+        return h
+
+    monkeypatch.setattr(slack_socket, "_build_handler", build)
     h = slack_socket.start_listener()
     assert h is not None and h.thread.daemon
-    h.thread.join(timeout=5)
-    assert "listener stopped: invalid_auth" in capsys.readouterr().err
+    assert _wait_for(lambda: h.handler is not None and h.handler.connected)
     h.stop()
+    h.thread.join(timeout=5)
+    assert not h.thread.is_alive() and made[-1].closed and made[1].closed
+
+
+def test_listener_log_order(fake_bolt, monkeypatch, capsys):
+    calls = iter([RuntimeError("invalid_auth"), FakeHandler()])
+
+    def build(*a):
+        nxt = next(calls)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    monkeypatch.setattr(slack_socket, "_build_handler", build)
+    h = slack_socket.start_listener()
+    assert _wait_for(lambda: h.handler is not None and h.handler.connected)
+    h.stop()
+    h.thread.join(timeout=5)
+    err = capsys.readouterr().err
+    assert err.index("connecting") < err.index("connect failed (attempt 1): invalid_auth") \
+        < err.index("] enabled")
+
+
+def test_stop_before_first_connect_finishes(fake_bolt, monkeypatch):
+    import threading
+    gate, built = threading.Event(), []
+
+    def slow_build(*a):
+        gate.wait(5)                                # auth.test still in flight
+        built.append(FakeHandler())
+        return built[-1]
+
+    monkeypatch.setattr(slack_socket, "_build_handler", slow_build)
+    h = slack_socket.start_listener()
+    h.stop()                                        # handler not set yet: must still take effect
+    gate.set()
+    h.thread.join(timeout=5)
+    assert not h.thread.is_alive()
+    assert built[0].closed and not built[0].connected and h.handler is None

@@ -7,7 +7,9 @@ calls GitHub: a decision only records `<items>/<item>/decision.json` (default ca
 
 Only Slack user IDs in SLACK_APPROVERS (comma-separated) may decide; unset means nobody can.
 If SLACK_CHANNEL is a channel ID, clicks from any other channel are ignored. The first
-decision per item wins; later clicks (double-clicks, Slack retries) are refused.
+decision per item wins; later clicks (double-clicks, Slack retries) are refused. If a
+decision cannot be recorded the card keeps its buttons. A failed connect (bad token, no
+network yet) is retried with backoff; "enabled" is logged only once connected.
 
 Blocking standalone mode (keeps buttons live after a `wreckless run` exits):
     uv run --extra slack python -m wreckless.slack_socket
@@ -16,9 +18,10 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -36,7 +39,19 @@ def _log(msg: str) -> None:
 
 
 class AlreadyDecided(Exception):
-    pass
+    """str(e) describes the decision already on disk, e.g. "approved by <@U123>"."""
+
+
+def _recorded(path: Path, tries: int = 5) -> str:
+    """Describe the decision in an existing decision.json (retrying a file still being written)."""
+    for i in range(tries):
+        try:
+            rec = json.loads(path.read_text())
+            who = f" by <@{rec['user']}>" if rec.get("user") else ""
+            return f"{rec.get('decision', 'decided')}{who}"
+        except (OSError, ValueError, TypeError, AttributeError):
+            time.sleep(0.05 * (i + 1))
+    return "decided"
 
 
 def record_decision(info: dict, runs_dir: Path = ITEMS) -> Path | None:
@@ -44,6 +59,10 @@ def record_decision(info: dict, runs_dir: Path = ITEMS) -> Path | None:
 
     Anything that later acts on an approval must check the branch head still equals
     info["commit"]: the approval covers that commit, not whatever the branch holds later.
+
+    The file appears atomically and complete (written + fsynced under a temp name, then
+    hard-linked into place, which fails if it already exists), so a concurrent click never
+    reads a half-written decision. A later click raises AlreadyDecided naming the recorded one.
     """
     run_id = (info.get("run_id") or "").replace("#", "-")
     if not _SAFE_ID.match(run_id) or ".." in run_id:
@@ -51,11 +70,20 @@ def record_decision(info: dict, runs_dir: Path = ITEMS) -> Path | None:
         return None
     path = Path(runs_dir) / run_id / "decision.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise AlreadyDecided(_recorded(path))
+    fd, tmp = tempfile.mkstemp(prefix=".decision-", suffix=".tmp", dir=path.parent)
     try:
-        with path.open("x") as f:  # first decision wins
+        with os.fdopen(fd, "w") as f:
             f.write(json.dumps(info, indent=2))
-    except FileExistsError:
-        raise AlreadyDecided(json.loads(path.read_text()).get("decision", "decided")) from None
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, path)  # atomic create-if-absent: first decision wins
+        except FileExistsError:
+            raise AlreadyDecided(_recorded(path)) from None
+    finally:
+        os.unlink(tmp)
     return path
 
 
@@ -94,8 +122,14 @@ def _deny(client, channel: str | None, user: str, text: str) -> None:
 def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None = None,
                   runs_dir: Path = ITEMS, approvers: set[str] | None = None) -> dict[str, Callable]:
     """Return {action_id: handler}. Handlers use Bolt's kwarg injection (ack, body, client)."""
-    on_approve = on_approve or (lambda info: record_decision(info, runs_dir))
-    on_reject = on_reject or (lambda info: record_decision(info, runs_dir))
+    def default(info: dict) -> Path:
+        out = record_decision(info, runs_dir)
+        if out is None:
+            raise ValueError("decision refused (unsafe or missing run_id)")
+        return out
+
+    on_approve = on_approve or default
+    on_reject = on_reject or default
 
     def handle(decision: str, callback: Decision, ack, body: dict, client) -> None:
         try:
@@ -128,8 +162,10 @@ def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None
             except AlreadyDecided as e:
                 return _deny(client, channel, user, f"{info['run_id']} was already {e}; click ignored")
             except Exception as e:  # noqa: BLE001
+                # nothing was recorded: leave the card and its buttons alone so someone can retry
                 _log(f"callback error: {e}")
-                note = "decision could not be recorded (see the WreckLess host log)"
+                return _deny(client, channel, user, f"{decision} for {info['run_id']} could not be "
+                                                    "recorded (see the WreckLess host log); try again")
             ts = msg.get("ts") or (body.get("container") or {}).get("message_ts")
             if channel and ts:
                 client.chat_update(channel=channel, ts=ts, text=f"WreckLess: {decision}",
@@ -156,13 +192,39 @@ def register(app, handlers: dict[str, Callable]) -> None:
 class ListenerHandle:
     thread: threading.Thread
     handler: object | None = None
+    stopped: threading.Event = field(default_factory=threading.Event)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def adopt(self, handler) -> bool:
+        """Listener thread hands over a fresh handler; False (and it is closed) if stop() won."""
+        with self._lock:
+            if not self.stopped.is_set():
+                self.handler = handler
+                return True
+        _close(handler)
+        return False
+
+    def drop(self) -> None:
+        """Close and forget the current handler (after a failed connect)."""
+        with self._lock:
+            handler, self.handler = self.handler, None
+        if handler is not None:
+            _close(handler)
 
     def stop(self) -> None:
-        try:
-            if self.handler is not None:
-                self.handler.close()
-        except Exception as e:  # noqa: BLE001
-            _log(f"close failed: {e}")
+        """Safe at any time, including before the first connect attempt has finished."""
+        self.stopped.set()
+        self.drop()
+
+
+def _close(handler) -> None:
+    try:
+        handler.close()
+    except Exception as e:  # noqa: BLE001
+        _log(f"close failed: {e}")
+
+
+RETRY_FIRST, RETRY_MAX = 5.0, 300.0   # seconds between connect attempts, doubling up to the cap
 
 
 def _enabled() -> tuple[bool, str]:
@@ -196,15 +258,27 @@ def start_listener(on_approve: Decision | None = None, on_reject: Decision | Non
         handle = ListenerHandle(thread=None)  # type: ignore[arg-type]
 
         def run() -> None:
-            try:
-                handle.handler = _build_handler(on_approve, on_reject, runs_dir)
-                handle.handler.start()  # blocking inside this daemon thread only
-            except Exception as e:  # noqa: BLE001
-                _log(f"listener stopped: {e}")
+            delay, attempt = RETRY_FIRST, 1
+            while not handle.stopped.is_set():
+                try:
+                    # App() calls auth.test and connect() opens the wss: either can fail
+                    handler = _build_handler(on_approve, on_reject, runs_dir)
+                    if not handle.adopt(handler):
+                        return
+                    handler.connect()  # non-blocking, unlike start()
+                except Exception as e:  # noqa: BLE001
+                    _log(f"connect failed (attempt {attempt}): {e}; retrying in {delay:g}s")
+                    handle.drop()
+                    handle.stopped.wait(delay)
+                    delay, attempt = min(delay * 2, RETRY_MAX), attempt + 1
+                    continue
+                _log("enabled (Socket Mode, outbound wss)")
+                handle.stopped.wait()  # the Socket Mode client reconnects by itself from here
+                return
 
         handle.thread = threading.Thread(target=run, name="wreckless-slack-socket", daemon=True)
+        _log("connecting (Socket Mode, outbound wss)")
         handle.thread.start()
-        _log("enabled (Socket Mode, outbound wss)")
         return handle
     except Exception as e:  # noqa: BLE001
         _log(f"disabled (start error: {e})")
