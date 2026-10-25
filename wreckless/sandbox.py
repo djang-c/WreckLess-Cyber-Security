@@ -30,18 +30,48 @@ GUARD = textwrap.dedent('''
     _WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
     _busy = []
 
+    _VSEP = _VICTIM.rstrip(os.sep) + os.sep if _VICTIM else None
+    _genuine = {}
+
+    def _in_victim(path):
+        return bool(_VSEP) and os.path.realpath(path).startswith(_VSEP)
+
+    def _genuine_codes(filename):
+        """Every code object compiled from the victim file as it is on disk."""
+        if filename not in _genuine:
+            found, todo = set(), []
+            try:
+                with open(filename, "rb") as fh:
+                    todo.append(compile(fh.read(), filename, "exec", dont_inherit=True))
+            except (OSError, SyntaxError, ValueError):
+                pass
+            while todo:
+                c = todo.pop()
+                found.add(c)
+                todo.extend(k for k in c.co_consts if isinstance(k, type(c)))
+            _genuine[filename] = found
+        return _genuine[filename]
+
     def _provenance():
-        frames, f = [], sys._getframe(2)
-        while f is not None:
-            frames.append(f.f_code.co_filename)
-            f = f.f_back
-        via = next((fn for fn in frames if _VICTIM and fn.startswith(_VICTIM)), None)
+        # A frame only counts as victim code if its code object equals one compiled from
+        # the victim's source on disk; co_filename alone is forgeable via compile().
+        frames, via, f = [], None, sys._getframe(2)
         _busy.append(1)
         try:
+            while f is not None:
+                fn = f.f_code.co_filename
+                frames.append(fn)
+                if via is None and _in_victim(fn) and f.f_code in _genuine_codes(fn):
+                    via = fn
+                f = f.f_back
             with open(_PROV, "w") as fh:
                 json.dump({"via_victim": via, "frames": frames[:30]}, fh)
         finally:
             _busy.pop()
+
+    _MUTATE = {"os.rename": (0, 1), "os.replace": (0, 1), "os.remove": (0,), "os.rmdir": (0,),
+               "os.chmod": (0,), "os.truncate": (0,), "os.link": (0, 1), "os.symlink": (1,),
+               "shutil.rmtree": (0,), "shutil.move": (0, 1), "shutil.copyfile": (1,)}
 
     def _hook(event, args):
         if _busy:
@@ -50,8 +80,15 @@ GUARD = textwrap.dedent('''
             p = os.path.realpath(os.fsdecode(args[0]))
             if not (p.startswith(_ROOT) or p == "/dev/null"):
                 raise PermissionError(f"[enclave] write outside sandbox blocked: {p}")
+            if _in_victim(p):
+                raise PermissionError(f"[enclave] victim source is read-only: {p}")
             if _ORACLE and _PROV and p == os.path.realpath(_ORACLE):
                 _provenance()
+        elif event in _MUTATE:
+            for i in _MUTATE[event]:
+                a = args[i] if i < len(args) else None
+                if isinstance(a, (str, bytes, os.PathLike)) and _in_victim(os.fsdecode(a)):
+                    raise PermissionError(f"[enclave] victim source is read-only: {os.fsdecode(a)}")
         elif event == "socket.connect":
             addr = args[1]
             if isinstance(addr, tuple) and addr[0] not in ("127.0.0.1", "::1", "localhost"):

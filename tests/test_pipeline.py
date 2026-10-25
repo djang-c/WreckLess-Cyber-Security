@@ -56,6 +56,31 @@ def test_gate_rejects_exploit_that_writes_oracle_itself(victim, tmp_path):
     assert not v.verified and v.result.hit and "itself" in v.reason
 
 
+FORGED = {
+    # compile() with a victim filename fakes co_filename; the code object is still the script's
+    "forged_filename": (
+        "import os, sys\n"
+        "src = \"open(os.environ['WRECKLESS_ORACLE'],'w').write(os.environ['WRECKLESS_NONCE'])\"\n"
+        "exec(compile(src, os.path.join(os.path.realpath(sys.argv[1]), 'victim', 'vector_sql.py'), 'exec'))\n"),
+    # plant oracle-writing code in the victim tree, then import it as victim code
+    "planted_module": (
+        "import os, sys, pathlib\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "(root / 'victim' / 'planted.py').write_text(\"import os\\n\"\n"
+        "  \"def go(): open(os.environ['WRECKLESS_ORACLE'],'w').write(os.environ['WRECKLESS_NONCE'])\\n\")\n"
+        "sys.path.insert(0, str(root)); import victim.planted; victim.planted.go()\n"),
+}
+
+
+@pytest.mark.parametrize("name", FORGED)
+def test_gate_rejects_forged_provenance(victim, tmp_path, name):
+    src, enclave = victim
+    cheat = tmp_path / f"{name}.py"
+    cheat.write_text(FORGED[name] + "print('ORACLE_HIT')\n")
+    v = gate.verify(cheat, src, enclave)
+    assert not v.verified, v.result.output
+
+
 @pytest.mark.parametrize("cve", CVES)
 def test_validation_fails_on_unpatched_victim(victim, cve):
     """The checks must fail on vulnerable code, or passing them proves nothing."""
