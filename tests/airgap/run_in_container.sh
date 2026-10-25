@@ -89,6 +89,16 @@ inside_main() {
   echo "INFO verify (lockdown on, as uid 65534):"
   rc=0; setpriv --reuid=65534 --regid=65534 --clear-groups bash "$L" verify | sed 's/^/  | /' || rc=${PIPESTATUS[0]}
   [[ $rc -eq 0 ]] && result f_verify_exit0 PASS "exit 0" || result f_verify_exit0 FAIL "exit $rc"
+  rc=0; bash "$L" verify >/dev/null || rc=$?
+  [[ $rc -eq 0 ]] && result f_verify_root_counter PASS "exit 0 (our REJECT counter rose)" \
+    || result f_verify_root_counter FAIL "exit $rc as root"
+
+  # a reset that our chain did not send must not count as blocked (root checks the counter)
+  $ipt -I OUTPUT 1 -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+  rc=0; out=$(bash "$L" verify 2>&1) || rc=$?
+  $ipt -D OUTPUT -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+  [[ $rc -ne 0 && $out == *"not by our chain"* ]] && result f_verify_foreign_reject_fails PASS "exit $rc" \
+    || result f_verify_foreign_reject_fails FAIL "exit $rc with a foreign REJECT"
 
   bash "$L" off
   p=$(probe api.openai.com 4)

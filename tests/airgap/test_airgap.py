@@ -24,6 +24,8 @@ CHECKS = [
     "d_idempotent",
     "e_off_restores",
     "f_verify_exit0",
+    "f_verify_root_counter",
+    "f_verify_foreign_reject_fails",
     "f_verify_fails_when_off",
     "g_dryrun_nonroot",
     "h_airtight",
