@@ -24,7 +24,7 @@ def test_plain_mode_has_no_escapes_and_keeps_the_eyes():
         grid = m.pixels(role, "idle", "idle", 1.0)
         lines = m.render(grid, "none")
         assert not any("\x1b" in ln for ln in lines)
-        no_eyes = [[None if c in (m.INK["e"], m.INK["E"]) else c for c in row] for row in grid]
+        no_eyes = [[None if c == m.INK["e"] else c for c in row] for row in grid]
         assert any(c == m.INK["e"] for row in grid for c in row)
         assert m.render(no_eyes, "none") == lines  # eyes render as holes, not blocks
         assert m.render([[c and m.ROLE_COLORS[role][0] for c in row] for row in grid], "none") != lines

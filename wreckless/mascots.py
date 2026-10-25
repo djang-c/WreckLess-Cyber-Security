@@ -36,7 +36,7 @@ INK = {
     "K": (100, 110, 135), "w": (248, 250, 252), "g": (148, 163, 184), "G": (71, 85, 105),
     "y": (250, 204, 21), "Y": (161, 98, 7), "r": (220, 38, 38), "n": (129, 140, 248),
     "N": (79, 70, 229), "f": (120, 90, 60), "c": (34, 211, 238),
-    "C": (14, 116, 144), "o": (251, 146, 60), "p": (244, 114, 182), "e": (17, 24, 39), "E": (255, 255, 255),
+    "C": (14, 116, 144), "o": (251, 146, 60), "p": (244, 114, 182), "e": (17, 24, 39),
     "O": (249, 115, 22), "b": (9, 9, 11), "v": (74, 222, 128), "s": (222, 184, 135),
 }
 
@@ -225,9 +225,8 @@ def pixels(role: str, task: str = "idle", mood: str = "idle", t: float = 0.0) ->
         put(ey, a - 1, "b")
         put(ey + 1 + flap, a - 2, "b")
     asleep = task == "idle" and mood == "idle"
-    eyes = set(_eyes(role, "sad" if asleep else mood, t))
-    for y, x in eyes:  # dark pupil with a white catchlight on top, so eyes don't read as holes
-        put(y, x, "E" if face == "mask" or (y + 1, x) in eyes else "e")
+    for y, x in _eyes(role, "sad" if asleep else mood, t):  # one flat colour, like the dots
+        put(y, x, "w" if face == "mask" else "e")  # white only where the mask is black
     if mood == "happy":
         put(ey + 1, lx - 1, "p")
         put(ey + 1, rx + 1, "p")
@@ -312,7 +311,7 @@ def render(grid: list[list], mode: str | None = None) -> list[str]:
         out = []
         for a, b in zip(top, bot):
             if mode == "none":  # monochrome: eyes become holes so the face still reads
-                a, b = (None if c in (INK["e"], INK["E"]) else c for c in (a, b))
+                a, b = (None if c == INK["e"] else c for c in (a, b))
                 out.append("█" if a and b else "▀" if a else "▄" if b else " ")
             elif a and b:
                 out.append(f"\033[{_fg(a, mode)};{_bg(b, mode)}m▀\033[0m")
