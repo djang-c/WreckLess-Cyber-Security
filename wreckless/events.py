@@ -57,7 +57,7 @@ def _render(ev: dict) -> None:
     elif kind in ("detail", "diff"):
         getattr(ui, kind)(actor, ev["text"], _record=False)
     elif kind == "mascot":
-        ui.mascot(actor, _record=False)
+        ui.mascot(actor, ev.get("task"), _record=False)
     elif kind == "notified":
         ui.notified(ev["item"], ev["channel"], ts=t, _record=False)
     elif kind in ("intrusion", "patch_validated"):

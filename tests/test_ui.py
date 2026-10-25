@@ -163,3 +163,21 @@ def test_replay_mode_is_reset_even_if_replay_crashes(tmp_path, capsys, monkeypat
     capsys.readouterr()
     ui.say("core", "live again")
     assert "REPLAY" not in capsys.readouterr().out
+
+
+def test_mascot_and_tool_calls_record_the_task(capsys):
+    seen = []
+    ui.SINK = lambda role, kind, **data: seen.append((role, kind, data))
+    try:
+        ui.mascot("red")
+        ui.mascot("blue", "test")
+        ui.tool_call("red", "sandbox_exec", "script_path='x.py'")
+        ui.tool_call("red", "unknown_tool", "")
+    finally:
+        ui.SINK = None
+    assert ("red", "mascot", {"task": "exploit"}) in seen
+    assert ("blue", "mascot", {"task": "test"}) in seen
+    assert ("red", "task", {"task": "sandbox"}) in seen
+    assert sum(k == "task" for _, k, _ in seen) == 1
+    out = capsys.readouterr().out
+    assert "building exploit" in out and "tool → sandbox_exec" in out

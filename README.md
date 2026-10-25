@@ -1,6 +1,6 @@
 <div align="center">
 
-<!-- PLACEHOLDER: logo / hero banner (1600x500) — mascots 🕵️ 🎩 👷 around a Dell GB10 -->
+<!-- PLACEHOLDER: logo / hero banner (1600x500) — the bird flock around a Dell GB10 -->
 <img src="docs/assets/hero-banner.png" alt="WreckLess banner" width="100%">
 
 # WreckLess
@@ -39,14 +39,20 @@ flowchart LR
     D -->|no| F["🙋 Escalate<br/>to a human"]
 ```
 
-| | Role | Mascot | Job |
+| | Role | Bird | Job |
 |---|---|---|---|
-| 🟪 | **Purple** | Detective Fedora 🕵️ | Pulls threat intel (live feed or offline cache) and forms an attack hypothesis |
-| 🔴 | **Red** | Top Hat 🎩 | Writes `repro_exploit.py` and runs it behind a userland guard rail (OpenShell when installed) until it **provably** works |
-| 🔵 | **Blue** | Hard Hat 👷 | Patches the root cause, runs tests, and writes a runtime egress policy |
+| 🟪 | **Purple** | round · magnifying glass | Pulls threat intel (live feed or offline cache) and forms an attack hypothesis |
+| 🔴 | **Red** | dart · bandit mask + bomb | Writes `repro_exploit.py` and runs it behind a userland guard rail (OpenShell when installed) until it **provably** works |
+| 🟨 | **Gate** | block · guard cap + clipboard | Re-runs Red's exploit with a fresh nonce; only an oracle hit from victim code counts |
+| 🔵 | **Blue** | egg · hard hat + wrench | Patches the root cause, runs tests, and writes a runtime egress policy |
+| ⬜ | **Core** | hen · envelope | Orchestrates the queue and delivers the fix branch for review |
 
-<!-- PLACEHOLDER: mascot illustration sheet (3 characters side by side) -->
-<img src="docs/assets/mascots.png" alt="Purple, Red and Blue mascots" width="70%">
+<img src="docs/assets/mascots.png" alt="The flock: Purple, Red, Gate, Blue and Core" width="85%">
+
+Each bird swaps its hat and prop to show what it is doing right now (reading, detonating in
+the sandbox, running tests, ...). Watch them live in a tmux pane with `wreckless view`
+(`--role red` for a single bird), or browse every look with `wreckless mascots --animate`.
+Regenerate the sheet above with `python3 scripts/mascot_sheet.py`.
 
 ---
 

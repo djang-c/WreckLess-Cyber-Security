@@ -1,4 +1,4 @@
-"""wreckless run | daemon | status | replay | metrics | intel"""
+"""wreckless run | daemon | status | replay | metrics | intel | view | mascots"""
 import argparse
 import json
 import sys
@@ -62,11 +62,28 @@ def main(argv: list[str] | None = None) -> int:
     it.add_argument("--feeds", default="osv,github,kev", help="comma list for sync")
     it.add_argument("--target", choices=targets.names(), default="victim_app", help="whose inventory to sync")
 
+    vw = sub.add_parser("view", help="live flock: one bird per role, animated from events.jsonl")
+    vw.add_argument("--home", type=Path, default=RUNS / "swarm")
+    vw.add_argument("--role", action="append", choices=["purple", "red", "gate", "blue", "core"],
+                    help="only these birds (repeatable), e.g. one tmux pane per bird")
+
+    mc = sub.add_parser("mascots", help="preview the role mascots (hats per task, moods)")
+    mc.add_argument("--animate", action="store_true", help="play the pipeline story in place")
+    mc.add_argument("--seconds", type=float, default=32)
+
     a = ap.parse_args(argv)
     if a.cmd == "intel":
         return _intel(a.action, a.query, tuple(a.feeds.split(",")), a.target)
     if a.cmd == "metrics":
         return _metrics(a.watch, a.json)
+    if a.cmd == "view":
+        from wreckless.mascots import watch
+        watch(a.home / "events.jsonl", a.role)
+        return 0
+    if a.cmd == "mascots":
+        from wreckless.mascots import preview
+        preview(a.animate, a.seconds)
+        return 0
     if a.cmd == "replay":
         replay(a.events, a.speed, a.item)
         return 0

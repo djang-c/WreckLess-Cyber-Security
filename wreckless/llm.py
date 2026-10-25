@@ -55,7 +55,7 @@ def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[
         for call in msg.tool_calls:
             try:
                 args = json.loads(call.function.arguments or "{}")
-                ui.say(role, f"tool → {call.function.name}({_short(args)})")
+                ui.tool_call(role, call.function.name, _short(args))
                 out = by_name[call.function.name].fn(**args)
             except Exception as e:  # tool errors go back to the model, not up the stack
                 out = f"ERROR: {type(e).__name__}: {e}"

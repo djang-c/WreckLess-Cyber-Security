@@ -21,13 +21,15 @@ import sys
 import threading
 import time
 
+from wreckless import mascots
+
 RESET = "\033[0m"
-ROLES = {
-    "purple": ("\033[1;35m", "🕵️ ", "PURPLE/Fedora"),
-    "red": ("\033[1;31m", "🎩", "RED/TopHat"),
-    "blue": ("\033[1;34m", "👷", "BLUE/HardHat"),
-    "gate": ("\033[1;33m", "🔒", "VERIFY-GATE"),
-    "core": ("\033[1;37m", "⚙️ ", "NEMOCLAW"),
+ROLES = {  # single-width icons only: emoji widths break alignment in tmux panes
+    "purple": ("\033[1;35m", "●", "PURPLE"),
+    "red": ("\033[1;31m", "▲", "RED"),
+    "blue": ("\033[1;34m", "■", "BLUE"),
+    "gate": ("\033[1;33m", "◆", "VERIFY-GATE"),
+    "core": ("\033[1;37m", "▬", "NEMOCLAW"),
 }
 
 BOLD, DIM = "\033[1m", "\033[2m"
@@ -41,42 +43,12 @@ _UNSAFE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[0-9;?]*[ -/]*[@
                      r"|\x1b[^\[\]]|[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f\x80-\x9f]")
 _LOCK = threading.RLock()  # worker threads share stdout; multi-line panels must not interleave
 
-MASCOTS = {
-    "purple": ("intel analyst · reads the advisory, forms the hypothesis", [
-        r"     .-'''-.    ",
-        r"   _/_______\_  ",
-        r"     ( -_- )    ",
-        r"     /|   |\o-- ",
-        r"      /   \     ",
-    ]),
-    "red": ("exploit crafter · proves the bug is real, in the sandbox", [
-        r"      _____     ",
-        r"      |   |     ",
-        r"    __|___|__   ",
-        r"     ( >_< )    ",
-        r"     /|   |\ /  ",
-    ]),
-    "blue": ("patch engineer · fixes it, then the orchestrator checks it", [
-        r"      _____     ",
-        r"    /_/___\_\   ",
-        r"     ( ^_^ )    ",
-        r"     /|   |\-[] ",
-        r"      /   \     ",
-    ]),
-    "gate": ("verify gate · fresh nonce, oracle must be hit from victim code", [
-        r"     .-----.    ",
-        r"     | o o |    ",
-        r"    _|_____|_   ",
-        r"    |  [#]  |   ",
-        r"    |_______|   ",
-    ]),
-    "core": ("orchestrator · candidate queue + per-item lifecycle", [
-        r"    [=======]   ",
-        r"    | (o o) |<> ",
-        r"    |  \=/  |   ",
-        r"    /|_____|\   ",
-        r"     //   \\    ",
-    ]),
+CAPTIONS = {
+    "purple": "intel analyst · reads the advisory, forms the hypothesis",
+    "red": "exploit crafter · proves the bug is real, in the sandbox",
+    "blue": "patch engineer · fixes it, then the orchestrator checks it",
+    "gate": "verify gate · fresh nonce, oracle must be hit from victim code",
+    "core": "orchestrator · candidate queue + per-item lifecycle",
 }
 
 # Set by EventLog so terminal output can be replayed later: (role, kind, **data) -> None.
@@ -162,17 +134,28 @@ def banner(text: str, _record: bool = True) -> None:
         _emit("core", "banner", text=text)
 
 
-def mascot(role: str, _record: bool = True) -> None:
-    """Role mascot, printed when the role enters the stage."""
+def mascot(role: str, task: str | None = None, _record: bool = True) -> None:
+    """The role's bird, printed when it enters the stage, with its task's hat and prop."""
     color, icon, tag = ROLES[role]
-    caption, art = MASCOTS[role]
-    side = {1: _c(color, f"{icon} {tag}"), 2: _c(DIM, caption)}
+    task = task or mascots.STAGE_TASK[role]
+    mode = mascots.color_mode() if color_enabled() else "none"
+    art = mascots.render(mascots.pixels(role, task, "idle", 1.0), mode)
+    art = [ln for ln in art if strip_ansi(ln).strip()]
+    side = {1: _c(color, f"{icon} {tag}"), 2: _c(DIM, CAPTIONS[role]),
+            3: _c(DIM, mascots.TASKS[task][2])}
     with _LOCK:
         _out("")
         for i, line in enumerate(art):
-            _out(f"{_c(color, line)}  {side.get(i, '')}".rstrip())
+            _out(f"{line}  {side.get(i, '')}".rstrip())
     if _record:
-        _emit(role, "mascot")
+        _emit(role, "mascot", task=task)
+
+
+def tool_call(role: str, name: str, args: str) -> None:
+    """An agent's tool use: one trace line, plus a ``task`` event so ``view`` swaps the hat."""
+    say(role, f"tool → {name}({args})")
+    if name in mascots.TASK_OF:
+        _emit(role, "task", task=mascots.TASK_OF[name])
 
 
 def transition(item: str, frm: str, to: str, actor: str, ts: float | None = None) -> None:

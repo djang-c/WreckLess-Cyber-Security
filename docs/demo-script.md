@@ -4,6 +4,10 @@ Run: `scripts/demo.sh [live|demo|scripted|replay]` (default `demo`). The script 
 (curl `/v1/models` on :8000/:8001/:8002, a recorded item that reached `notified`, Slack config),
 prints every `sudo` command and asks before running it.
 
+Optional stage layout: a short tmux pane on top running `wreckless view` (the flock, animated
+live from `events.jsonl`) above the main run, so the audience can follow who is working:
+`tmux split-window -vb -l 9 'uv run wreckless view'`.
+
 Honesty rule for the presenter: say only what the screen shows. If the terminal says
 `fallback`, `outbox`, or `REPLAY of …`, say it out loud. A failed scoreboard is shown, not skipped.
 
@@ -12,9 +16,9 @@ Honesty rule for the presenter: say only what the screen shows. If the terminal 
 | Beat | Window | Budget | On screen |
 |---|---|---|---|
 | 1 Airgap | 0:00–0:35 | 35 s | `airgap_lockdown.sh on` ✗ BLOCKED rows, then the `verify` PASS table |
-| 2 Purple | 0:35–1:05 | 30 s | Fedora mascot, advisory, item queued as `PREDICTION` |
-| 3 Red + gate | 1:05–2:05 | 60 s | TopHat mascot, gate re-runs the exploit, red **INTRUSION** flash |
-| 4 Blue | 2:05–3:20 | 75 s | HardHat mascot, +green/−red diff, 3-check scoreboard, green **PATCH VALIDATED** |
+| 2 Purple | 0:35–1:05 | 30 s | Purple bird (magnifier), advisory, item queued as `PREDICTION` |
+| 3 Red + gate | 1:05–2:05 | 60 s | Red bird (mask + bomb), gate bird re-runs the exploit, red **INTRUSION** flash |
+| 4 Blue | 2:05–3:20 | 75 s | Blue bird (hard hat + wrench), +green/−red diff, 3-check scoreboard, green **PATCH VALIDATED** |
 | 5 Slack | 3:20–4:00 | 40 s | "Fix branch ready (local, pending review)" card in Slack (or the outbox line, if Slack is down) |
 
 Live-LLM wall time on the GB10 per beat: `UNVERIFIED` — measure in rehearsal and fill in.
@@ -28,13 +32,13 @@ on talk time; scroll back to each beat). Replay reproduces the recorded run's or
    stay up. Everything you see next runs on this box." Point at the BLOCKED rows.
    `verify` only passes on a real TCP reset from our rule; if it says FAIL, don't claim airgap.
    Linux/iptables only.
-2. **Purple / Fedora.** "Purple reads the advisory from local cache and writes a hypothesis:
+2. **Purple.** "Purple reads the advisory from local cache and writes a hypothesis:
    which file, which sink, what the oracle is." It enters the queue as a `PREDICTION`.
-3. **Red / TopHat.** "Red writes an exploit and runs it inside the enclave. We only report
+3. **Red.** "Red writes an exploit and runs it inside the enclave. We only report
    what we can reproduce — the oracle is a nonce file written by `eval` of a DB value."
    "Red doesn't grade itself: the gate re-runs it with a fresh nonce and only accepts the oracle
    if it was written from victim code." INTRUSION appears only after `verifying → verified`.
-4. **Blue / HardHat.** "Blue patches in a separate worktree. Blue doesn't grade itself: the
+4. **Blue.** "Blue patches in a separate worktree. Blue doesn't grade itself: the
    orchestrator runs our held-out regression test (derived from the upstream fix, which shipped
    no test), the functional suite, and replays Red's exploit." Read the scoreboard rows.
    PATCH VALIDATED only after `patching → patched`.

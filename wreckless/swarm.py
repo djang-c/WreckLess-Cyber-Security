@@ -200,6 +200,7 @@ class Swarm:
         slack.bind(branch=branch, commit=fix_commit, patch_source=patch_source)
         if patch_source == "fallback":
             ui.say("blue", f"\033[1;43;30m {blue.CACHED_LABEL} \033[0m")
+        ui.mascot("core", "notify")
         title = "Fix branch ready (local, pending review)"
         if patch_source == "fallback":
             title += f" · ⚠️ {blue.CACHED_LABEL}"
