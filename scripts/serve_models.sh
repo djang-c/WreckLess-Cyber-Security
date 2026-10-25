@@ -20,6 +20,19 @@ if [[ -z ${VLLM_RUNTIME:-} ]]; then
   if D docker image inspect "$IMAGE" >/dev/null 2>&1; then VLLM_RUNTIME=docker; else VLLM_RUNTIME=pip; fi
 fi
 
+# Triton JIT-compiles a C helper against Python.h at startup. Without python3.12-dev installed
+# (needs root), unpack the matching headers into the venv instead: apt-get download needs no root.
+if [[ $VLLM_RUNTIME == pip && ! -f /usr/include/python3.12/Python.h ]]; then
+  SYSROOT=$PWD/.venv-vllm/sysroot
+  if [[ ! -f $SYSROOT/usr/include/python3.12/Python.h ]]; then
+    tmp=$(mktemp -d); (cd "$tmp" && apt-get download -q python3.12-dev libpython3.12-dev >/dev/null)
+    for f in "$tmp"/*.deb; do dpkg-deb -x "$f" "$SYSROOT"; done; rm -rf "$tmp"
+  fi
+  export CPATH=$SYSROOT/usr/include/python3.12:$SYSROOT/usr/include${CPATH:+:$CPATH}
+fi
+# JIT kernel builds (flashinfer, torch extensions) call `ninja`, installed in the venv
+[[ $VLLM_RUNTIME == pip ]] && export PATH=$PWD/.venv-vllm/bin:$PATH
+
 if [[ ${1:-} == stop ]]; then
   pkill -f "vllm serve" 2>/dev/null || true
   for n in blue red victim; do D docker rm -f "wl-vllm-$n" >/dev/null 2>&1 || true; done
