@@ -57,3 +57,23 @@ All four are now rejected and kept as regression tests. On top of the strength r
 **Update 2026-10-25 (Kevin, `84e293a`).** gc introspection is now a guard violation and any violation rejects the run, so `a8_gc_dig_forge.py` is rejected; the strict xfail became `test_gc_dig_forgery_is_rejected`. Remaining residual: a payload that leaves Python (`os.system`) is outside the in-process hook; the control run is the backstop.
 
 **Decided by:** the team (Person B), 2026-10-25.
+
+## 2026-10-25: second oracle kind, the leak oracle (CVE-2024-23334)
+
+**Change.** `wreckless/sandbox.py` and `wreckless/gate.py` gain a second oracle kind for read bugs. A script whose first 2 KB contain `# wreckless-oracle: leak` runs in leak mode; every other script runs exactly as before (nonce mode, unchanged code path and tests).
+
+In leak mode:
+- the host plants a fresh secret in a file outside the victim tree and outside `tmp/`, passes its path as `WRECKLESS_SECRET_FILE`, and sets no `WRECKLESS_NONCE`;
+- the script must get the secret from the victim and write it to the oracle file; the oracle now holds the secret instead of the nonce, and the script (not victim code) writes it;
+- the guard raises a violation (run rejected) if payload code reads the secret file itself, and records the victim function that reads it. A read from a library worker thread the victim started (no victim frame on that stack) is accepted and reported as `leak`;
+- `gate.verify` skips only the check "nonce written via victim code"; every differential rule stays (hit on each fresh vulnerable copy, miss on the control, no violation, same flawed site as the reference exploit when it can be named).
+
+**Reason.** Path traversal, cross-tenant reads and similar bugs return data to the caller; no victim code writes anything, so the nonce oracle cannot express them and the first design (the exploit writing the leaked data) was rejected by the "written outside victim code" rule. Approved by the user on 2026-10-25.
+
+**What it does not cover.** A child process that reads the secret file is outside the Python guard (same known limit as in `docs`/README for nonce mode). The control run is the backstop: a script that gets the secret without the flaw gets it on the patched control too and is rejected (`test_child_process_reading_the_secret_is_caught_by_the_control`).
+
+**Evidence** (`tests/test_leak_oracle.py`, `tests/test_aiohttp_case.py`): reference exploit VERIFIED; direct read = violation; `cat` child = rejected by the control; made-up value = miss; the secret is fresh per run and deleted; no marker = old behaviour (`test_nonce_mode_is_unchanged_without_the_marker`). The nonce-mode suites (`test_sandbox_gate.py`, `test_gate.py`, `test_blue_proof.py`) are unchanged and green.
+
+**Red's contract.** `wreckless/agents/red.py` still describes only the nonce oracle (not changed: another agent owns it). For the leak case the instructions travel in the advisory text (`benchmarks/CVE-2024-23334/advisory.json`, which Red receives); a live Red run on this case has not been measured. Adding the leak contract to `CONTRACT` in red.py is the proper fix.
+
+**Decided by:** the user, 2026-10-25.

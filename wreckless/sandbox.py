@@ -20,12 +20,22 @@ so a payload callback that victim code merely calls is not victim provenance. An
 by the payload taints the oracle for the run, and any guard violation (reported on stderr
 before the error is raised) rejects the run. The verify gate uses all of that to reject
 "exploits" that write the nonce themselves.
+
+Leak oracle (second oracle kind, for read bugs such as path traversal): a script that starts with
+``# wreckless-oracle: leak`` is run in leak mode. The host plants a fresh secret in a file outside
+the victim tree and tells the script its path (WRECKLESS_SECRET_FILE); there is no nonce. The
+script has to obtain the secret from the victim and write it to the oracle. The guard blocks the
+payload's own Python reads of that file (a violation, like a held-out read) and records the
+victim function that reads it; a read through a library thread the victim started is accepted
+unattributed. What the guard cannot see (a child process reading the file) is caught by the gate's
+control run: a script that gets the secret without the flaw also gets it on the patched control.
 """
 import ast
 import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -109,6 +119,8 @@ GUARD = textwrap.dedent('''
         if kfd:  # userland passes the key over a pipe so it is never in /proc/<pid>/environ
             key = p_read(int(kfd), 256).decode()
             p_close(int(kfd))
+        leak = env.get("WRECKLESS_SECRET_FILE")   # leak mode: the script is told this path on purpose
+        leak = realpath(leak) if leak else None
         deny = [sep(realpath(d)) for d in env.get("WRECKLESS_DENY_READ", "").split(os.pathsep) if d]
         allow = {realpath(a) for a in env.get("WRECKLESS_ALLOW_READ", "").split(os.pathsep) if a}
         writable = [sep(realpath(w)) for w in env.get("WRECKLESS_WRITABLE", root + "tmp").split(os.pathsep) if w]
@@ -236,6 +248,22 @@ GUARD = textwrap.dedent('''
                 return None, None, frames
             return None, None, frames
 
+        def secret_reader(f):
+            # Like victim_context, but a payload frame is a violation and a stack of library
+            # frames only (a worker thread the victim started) is accepted unattributed.
+            frames = []
+            while f is not None:
+                code = f.f_code
+                fn = filereal(norm(code.co_filename))
+                frames.append(fn)
+                if victim and fn.startswith(victim) and code in genuine_codes(fn):
+                    return fn, norm(code.co_qualname), frames
+                if dynamic.get(id(code)) is code or fn.startswith("<frozen ") or fn.startswith(trusted):
+                    f = f.f_back
+                    continue
+                raise violation("read of the leak secret by payload code blocked")
+            return None, None, frames
+
         def ctypes_ok(f):
             # ctypes is fine while a module is being imported (numpy loads it) or when victim
             # code uses it; the payload's own code (directly or through a library) may not
@@ -321,11 +349,16 @@ GUARD = textwrap.dedent('''
                         raise violation("relative '..' write blocked: " + p)  # dir_fd isn't audited
                     rp = realpath(p)
                     check_write(rp, "write")
-                    if oracle and rp == oracle:
+                    if oracle and rp == oracle and not leak:   # leak mode: the payload writes the oracle itself
                         touch_oracle(caller())
                     return
-                if deny or "proc" in p or mode is None:
+                if deny or leak or "proc" in p or mode is None:
                     rp = realpath(p)
+                    if leak and rp == leak:
+                        via, func, frames = secret_reader(caller())
+                        if via:
+                            state["via"], state["func"], state["frames"] = via, func, frames
+                            record()
                     if deny and rp not in allow and inside(rp, deny):
                         raise violation("read of held-out file blocked: " + rp)
                     if rp.startswith("/proc/") and rp.rsplit("/", 1)[-1] in ("environ", "mem"):
@@ -440,10 +473,12 @@ class OracleResult:
     returncode: int | None = None  # exploit process exit code (0 = it claims success)
     violation: bool = False        # the payload tripped the guard at least once
     via_func: str | None = None    # innermost genuine victim function when the oracle was written
+    leak: bool = False             # leak mode: hit = the planted secret was obtained from the victim;
+                                   # via_victim is then the victim file that read it (None: library thread)
 
     @property
     def verified(self) -> bool:
-        return self.hit and self.via_victim is not None and not self.violation
+        return self.hit and (self.via_victim is not None or self.leak) and not self.violation
 
 
 def _verify_record(raw: str | None, key: str) -> dict:
@@ -516,19 +551,42 @@ class Enclave:
         # unrelated token: the provenance path must not be derivable from the oracle's
         prov = self.guard_dir / f"prov_{secrets.token_hex(12)}.json"
         nonce, key = secrets.token_hex(12), secrets.token_hex(16)
-        r = self.run([self.python, str(script), str(victim), *extra_args], env={
-            "WRECKLESS_ORACLE": str(oracle), "WRECKLESS_NONCE": nonce,
-            "WRECKLESS_PROVENANCE": str(prov), "WRECKLESS_VICTIM_ROOT": str(victim),
-            **(env or {})}, secret=key)
-        # Read results in separate calls, after the payload exited, so its output can't forge them.
-        hit = self.impl.read(oracle) == nonce
-        info = _verify_record(self.impl.read(prov), key)
+        leak = is_leak_script(script)
+        # leak mode: a fresh secret in a file outside the victim tree and outside tmp (not writable
+        # by the payload); the script gets its path and no nonce. Deleted after the run.
+        planted = self.guard_dir / f"secret_{secrets.token_hex(12)}" if leak else None
+        if planted:
+            nonce = secrets.token_hex(12)
+            planted.write_text(nonce)
+        try:
+            r = self.run([self.python, str(script), str(victim), *extra_args], env={
+                "WRECKLESS_ORACLE": str(oracle), "WRECKLESS_PROVENANCE": str(prov),
+                "WRECKLESS_VICTIM_ROOT": str(victim),
+                **({"WRECKLESS_SECRET_FILE": str(planted)} if planted else {"WRECKLESS_NONCE": nonce}),
+                **(env or {})}, secret=key)
+            # Read results in separate calls, after the payload exited, so its output can't forge them.
+            hit = self.impl.read(oracle) == nonce
+            info = _verify_record(self.impl.read(prov), key)
+        finally:
+            if planted:
+                planted.unlink(missing_ok=True)
         via = info.get("via_victim")
         return OracleResult(hit, self.impl.to_host(via) if via else None, r.output, r.backend,
-                            info.get("frames", []), r.returncode, r.violation, info.get("via_func"))
+                            info.get("frames", []), r.returncode, r.violation, info.get("via_func"), leak)
 
     def close(self) -> None:
         self.impl.close()
+
+
+LEAK_MARKER = re.compile(r"^#\s*wreckless-oracle:\s*leak\s*$", re.M)
+
+
+def is_leak_script(script: Path) -> bool:
+    """A script declares leak mode in its first lines (see the module docstring)."""
+    try:
+        return bool(LEAK_MARKER.search(Path(script).read_text(errors="replace")[:2048]))
+    except OSError:
+        return False
 
 
 def _tail(out: str) -> tuple[str, bool]:

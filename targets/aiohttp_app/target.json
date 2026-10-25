@@ -1,0 +1,9 @@
+{
+  "description": "Minimal replica of aiohttp's static-file route (StaticResource._handle), adapted from aio-libs/aiohttp (Apache-2.0) at v3.9.1, the release before the CVE-2024-23334 fix. Requests are handled in-process: no server, no network.",
+  "source": ".",
+  "python": "host",
+  "functional_tests": "tests",
+  "benchmarks": "",
+  "inventory": "inventory.json",
+  "image": "wreckless-sandbox:py312"
+}
