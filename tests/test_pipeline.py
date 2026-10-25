@@ -160,3 +160,28 @@ def test_recover_fails_items_left_in_flight(tmp_path):
     assert sorted(q.recover()) == sorted([a, b])
     assert [q.get(i).state for i in (a, b, c)] == ["rejected", "patch_failed", "queued"]
     assert q.try_advance(a, "verifying", "gate") is None  # second claim is refused, not raised
+
+
+def test_owner_label_survives_only_its_process():
+    from wreckless.sandbox import _owner, _owner_alive
+    assert _owner_alive(_owner())
+    pid, start = _owner().split("-")
+    assert not _owner_alive(f"{pid}-{int(start) + 1}")  # same pid, different process (recycled)
+    assert not _owner_alive(None) and not _owner_alive("garbage")
+
+
+@pytest.mark.skipif(not openshell_available(), reason="OpenShell gateway not running")
+def test_sandbox_of_a_killed_run_is_pruned(tmp_path):
+    """close() never runs under SIGKILL; the daemon's startup prune must reclaim the sandbox."""
+    import subprocess
+    from wreckless.sandbox import prune_orphan_sandboxes
+    code = ("import sys, os, signal; from pathlib import Path; from wreckless.sandbox import Enclave\n"
+            "e = Enclave(Path(sys.argv[1]), sys.executable, backend='openshell')\n"
+            "e.run(['true']); print(e.impl.sandbox, flush=True); os.kill(os.getpid(), signal.SIGKILL)\n")
+    name = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True,
+                          timeout=300).stdout.strip()
+    listed = lambda: subprocess.run(["openshell", "sandbox", "list", "--names", "--page-size", "10000"],
+                                    capture_output=True, text=True).stdout.split()
+    assert name.startswith("wl-") and name in listed()
+    assert prune_orphan_sandboxes() >= 1
+    assert name not in listed()

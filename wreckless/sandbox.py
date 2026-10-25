@@ -24,6 +24,7 @@ before the error is raised) rejects the run. The verify gate uses all of that to
 import ast
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import shutil
@@ -609,6 +610,56 @@ def openshell_available() -> bool:
     return "Connected" in out
 
 
+OWNER_LABEL = "wreckless-owner"
+
+
+def _owner(pid: int | None = None) -> str | None:
+    """<pid>-<start time>: a recycled pid doesn't pass for the process that made the sandbox."""
+    pid = pid or os.getpid()
+    try:
+        return f"{pid}-{Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]}"
+    except (OSError, IndexError):
+        return None
+
+
+def _owner_alive(owner: str | None) -> bool:
+    pid = (owner or "").split("-", 1)[0]
+    return pid.isdigit() and _owner(int(pid)) == owner
+
+
+def _labels(get_json: str) -> dict:
+    try:
+        return json.loads(get_json).get("labels") or {}
+    except (ValueError, AttributeError):
+        return {}
+
+
+def prune_orphan_sandboxes() -> int:
+    """Delete WreckLess sandboxes whose owner process is gone. close() runs in a finally, so a
+    SIGKILLed run (or one whose gateway call timed out) leaves its sandbox behind for good."""
+    if not openshell_available():
+        return 0
+    try:
+        out = subprocess.run(["openshell", "sandbox", "list", "--selector", "app=wreckless",
+                              "--page-size", "10000", "-o", "json"],
+                             capture_output=True, text=True, timeout=60).stdout
+        boxes = json.loads(out).get("sandboxes") or []
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return 0
+    dead = [b["name"] for b in boxes if not _owner_alive((b.get("labels") or {}).get(OWNER_LABEL))]
+
+    def delete(name: str) -> None:
+        try:
+            subprocess.run(["openshell", "sandbox", "delete", name], capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            pass
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(16) as ex:  # ~12 s each (docker's graceful stop)
+        list(ex.map(delete, dead))
+    return len(dead)
+
+
 class _OpenShell:
     name = "openshell"
     python = "python3"
@@ -630,9 +681,14 @@ class _OpenShell:
     def _ensure(self) -> None:
         if self.created:
             return
-        if self._cli("get", self.sandbox, timeout=30).returncode != 0:
+        g = self._cli("get", self.sandbox, "-o", "json", timeout=30)
+        if g.returncode == 0 and not _owner_alive(_labels(g.stdout).get(OWNER_LABEL)):
+            self._cli("delete", self.sandbox, timeout=120)  # left by a killed run: never inherit its state
+            g = self._cli("get", self.sandbox, timeout=30)
+        if g.returncode != 0:
             r = self._cli("create", "--name", self.sandbox, "--from", self.image, "--no-tty", "--policy", str(SANDBOX_POLICY),
-                          "--no-auto-providers", "--detach", "--label", "app=wreckless")
+                          "--no-auto-providers", "--detach", "--label", "app=wreckless",
+                          "--label", f"{OWNER_LABEL}={_owner()}")
             if r.returncode != 0:
                 raise RuntimeError(f"openshell create failed: {r.stderr or r.stdout}")
         self.created = True

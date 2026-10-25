@@ -17,7 +17,7 @@ from wreckless.events import EventLog
 from wreckless.kb import IntelDB
 from wreckless.gitops import commit_all, git, init_victim, worktree
 from wreckless.notify import Notifier
-from wreckless.sandbox import Enclave
+from wreckless.sandbox import Enclave, prune_orphan_sandboxes
 
 
 class Swarm:
@@ -278,6 +278,8 @@ class Swarm:
         # a hero in another process really is in flight: only recover when none is running
         for item_id in ([] if self.hero_active() else self.queue.recover()):
             ui.say("core", f"{item_id} was interrupted by a restart → failed")
+        if n := prune_orphan_sandboxes():
+            ui.say("core", f"deleted {n} sandbox(es) left by killed runs")
         threads = [threading.Thread(target=self.purple_loop, args=(purple_interval,), daemon=True),
                    threading.Thread(target=self.worker_loop, daemon=True)]
         if hunt:
