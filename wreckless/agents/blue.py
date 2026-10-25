@@ -178,8 +178,13 @@ class BlueTools:
     def read_file(self, path: str) -> str:
         p = self._path(path)
         if not p:
-            return "ERROR: path outside repo"
-        return p.read_text() if p.is_file() else f"ERROR: no such file {path}"
+            return "ERROR: path outside repo: use a path relative to the repo root, e.g. victim/vector_sql.py"
+        if p.is_dir():  # a listing, so the model can find the source instead of guessing
+            root = self.wt.resolve()
+            files = sorted(str(c.relative_to(root)) for c in p.rglob("*")
+                           if c.is_file() and ".git" not in c.parts and "__pycache__" not in c.parts)
+            return "\n".join(files[:200])
+        return p.read_text() if p.is_file() else f"ERROR: no such file {path} (read_file(\".\") lists the repo)"
 
     def edit_file(self, path: str, old: str, new: str) -> str:
         """Replace exactly one occurrence. Falls back to unescaping \\n/\\t only if the exact text
@@ -387,6 +392,9 @@ def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings
     failure = None  # why no Blue LLM could be used, if none could
     if s.use_llm:
         public = {k: v for k, v in report.items() if k != "attack_trace"} | {"attack_trace": report["attack_trace"][-1500:]}
+        # the model's tools take repo-relative paths; the report's absolute run paths only mislead it
+        public["note"] = (f"All tool paths are relative to the repo root. Fix {report['affected_file']}"
+                          if report.get("affected_file") else "All tool paths are relative to the repo root.")
         eps = _endpoints(s)
         for n, ep in enumerate(eps):
             more = " — trying fallback" if n + 1 < len(eps) else ""

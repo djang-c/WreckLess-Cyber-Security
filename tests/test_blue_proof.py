@@ -242,3 +242,11 @@ def test_fallback_patch_is_labelled_cached_not_ai(tmp_path, monkeypatch, capsys)
     assert "Draft PR" not in final[1] and "Fix branch ready (local, pending review)" in final[1]
     assert "CACHED REFERENCE PATCH — not AI-generated" in final[1] + final[2]
     assert "CACHED REFERENCE PATCH — not AI-generated" in out
+
+
+def test_read_file_lists_a_directory_and_hints_on_bad_paths(tools):
+    listing = tools.read_file(".")
+    assert "victim/vector_sql.py" in listing.splitlines() and ".git/" not in listing
+    assert "victim/vector_sql.py" in tools.read_file("victim")
+    assert "relative to the repo root" in tools.read_file("/etc/passwd")
+    assert "read_file(" in tools.read_file("nope.py")
