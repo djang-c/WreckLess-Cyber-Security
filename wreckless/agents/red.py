@@ -23,6 +23,8 @@ CONTRACT = """Script contract (mandatory):
   from your own script does not count: the sandbox records who wrote the file. The host
   compares the file to NONCE exactly: no newline, so `echo` into it fails; use
   open(ORACLE, "w").write(NONCE) inside the code the payload reaches.
+- the payload only has to write that file from victim code. It needs no shell: plain file I/O
+  (open, pathlib) does it and passes validators that block system/exec/eval.
 - finally print ORACLE_HIT if the oracle file contains NONCE, else ORACLE_MISS, and exit 0
   on a hit, 1 on a miss. (The host reads the oracle file itself; output and exit code are
   for your own debugging and never decide a verdict.)"""
@@ -32,7 +34,9 @@ Goal: write `repro_exploit.py` proving the advisory is exploitable against the v
 and iterate with sandbox_exec until it reports VERIFIED-ELIGIBLE.
 {CONTRACT}
 Read the vulnerable source before writing. After every write_file, run sandbox_exec on it at once:
-never rewrite the script without having run it. Be concise."""
+never rewrite the script without having run it. If the victim's validator rejects the payload
+("illegal", "disallowed"), read its rules and use a different primitive: never retry the blocked call.
+Be concise."""
 
 HUNT_SYSTEM = f"""You are Top Hat, hunting for code-execution flaws in an authorized lab target.
 Explore the victim repo (read_file '.' lists files). Look for places where data that an
