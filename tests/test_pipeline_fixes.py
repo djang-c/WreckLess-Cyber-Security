@@ -192,3 +192,13 @@ def test_git_checkout_still_switches_real_branches(item):
     assert red.RedTools(wt, enclave, d, Settings()).git_checkout("other") == "checked out other"
     assert subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt, capture_output=True,
                           text=True).stdout.strip() == "other"
+
+
+def test_a_verified_exploit_under_another_name_becomes_the_contract_script(item):
+    """Live run: Ralph's winning script was simple_exploit.py, and the gate only takes repro_exploit.py."""
+    import shutil
+    wt, enclave, _, d = item
+    shutil.copy(BENCHMARKS / CVE / "known_good" / "repro_exploit.py", d / "simple_exploit.py")
+    tools = red.RedTools(wt, enclave, d, Settings())
+    assert "VERIFIED-ELIGIBLE" in tools.sandbox_exec("simple_exploit.py")
+    assert tools.eligible and (d / "repro_exploit.py").read_bytes() == (d / "simple_exploit.py").read_bytes()

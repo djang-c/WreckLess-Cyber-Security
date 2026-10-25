@@ -51,3 +51,9 @@ def test_nudges_are_capped(monkeypatch):
 def test_no_nudge_by_default_so_a_final_answer_is_final(monkeypatch):
     r, client, state = _run(monkeypatch, [_msg('{"title": null}')], True, nudge=0)
     assert r.final == '{"title": null}' and len(client.seen) == 1
+
+
+def test_unknown_tool_error_lists_the_real_tools(monkeypatch, capsys):
+    r, client, state = _run(monkeypatch, [_msg(None, ["run_shell_command"]), _msg(None, ["fix"]), _msg("ok")], True)
+    out = capsys.readouterr().out
+    assert "unknown tool 'run_shell_command'; the tools are: fix" in out and state["fixed"]

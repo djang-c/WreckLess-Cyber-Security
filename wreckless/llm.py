@@ -79,6 +79,8 @@ def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[
             try:
                 args = json.loads(call.function.arguments or "{}")
                 ui.tool_call(role, call.function.name, args)
+                if call.function.name not in by_name:
+                    raise LookupError(f"unknown tool {call.function.name!r}; the tools are: {', '.join(by_name)}")
                 out = by_name[call.function.name].fn(**args)
             except Exception as e:  # tool errors go back to the model, not up the stack
                 out = f"ERROR: {type(e).__name__}: {e}"
