@@ -1,0 +1,5 @@
+{
+  "_comment": "Purple matches advisories against this: the replica models aiohttp 3.9.1, affected by CVE-2024-23334 (fixed in 3.9.2).",
+  "ecosystem": "PyPI",
+  "packages": {"aiohttp": "3.9.1"}
+}

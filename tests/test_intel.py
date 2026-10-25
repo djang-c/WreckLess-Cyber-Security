@@ -119,8 +119,9 @@ def test_purple_loop_queues_benchmarks_then_feed_findings(tmp_path, fake_feeds, 
     sw.purple_loop(interval=1)
     cves = [it.cve for it in sw.queue.all()]
     # curated bundles first (the loop queues every bundle for whatever target it runs: see docs/handoff-case-studies.md)
-    assert cves[:4] == ["CVE-2023-44467", "CVE-2024-21513", "CVE-2025-3248", "WL-2024-RAG-EXFIL"]
-    assert cves[4:] == ["CVE-2099-0002", "CVE-2099-0001"]          # then KEV-first feed matches
+    assert cves[:5] == ["CVE-2023-44467", "CVE-2024-21513", "CVE-2024-23334", "CVE-2025-3248",
+                        "WL-2024-RAG-EXFIL"]
+    assert cves[5:] == ["CVE-2099-0002", "CVE-2099-0001"]          # then KEV-first feed matches
     sw.stop.clear()
     sw.purple_loop(interval=1)                                      # re-poll: no duplicates
-    assert len(sw.queue.all()) == 6
+    assert len(sw.queue.all()) == 7

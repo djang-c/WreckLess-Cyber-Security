@@ -12,6 +12,10 @@ The verdict comes from code executing, never from a model's say-so. It is differ
 The vulnerable copies and the control look alike (same basename and depth, random parent
 dirs) and the control runs at a random position, so an exploit cannot cheaply tell them apart.
 
+Leak mode (see sandbox.py): for read bugs the oracle holds a planted secret the script can only get
+from the victim; the same differential rules apply, and "written via victim code" becomes "the
+guard did not see the payload read the secret" (the control run is the backstop for the rest).
+
 Strength:
 - ``verified``  reference-patched control AND the flawed function confirmed (2 + 3);
 - ``reachable`` otherwise (e.g. Red-hunt finds: null-victim control, no reference exploit):
@@ -76,6 +80,8 @@ def _neutralize(tree: Path, reference_patch: Path | None) -> str:
 
 
 def _site(r: OracleResult, tree: Path) -> str:
+    if r.via_victim is None:      # leak mode through a library thread: no victim frame to name
+        return "leak"
     try:
         rel = Path(r.via_victim).resolve().relative_to(tree.resolve()).as_posix()
     except ValueError:
@@ -101,7 +107,7 @@ def verify(script: Path, victim: Path, enclave: Enclave, extra_args: list[str] =
         if kind == "reference-patched" and reference_exploit and reference_exploit.is_file():
             t = copy()
             ref = enclave.run_exploit(reference_exploit, t, (), env)
-            if ref.hit and ref.via_victim:
+            if ref.hit and (ref.via_victim or ref.leak):
                 flaw = _site(ref, t)
             else:
                 ui.say("gate", "reference exploit did not reach the oracle here → flawed function unknown")
@@ -122,7 +128,7 @@ def verify(script: Path, victim: Path, enclave: Enclave, extra_args: list[str] =
                 return Verdict(False, "oracle not reached", r, kind)
             if r.violation:
                 return Verdict(False, "the exploit tripped the enclave guard", r, kind)
-            if r.via_victim is None:
+            if r.via_victim is None and not r.leak:
                 return Verdict(False, "nonce written by the exploit script itself, not via victim code", r, kind)
         if res[ctl].hit:
             return Verdict(False, f"oracle also reached on the {kind} control: not caused by the target flaw",
@@ -144,7 +150,8 @@ def verify(script: Path, victim: Path, enclave: Enclave, extra_args: list[str] =
 
     v = decide()
     rows = [{"n": n, "copy": "control" if t == ctl else "vulnerable", "hit": res[t].hit,
-             "site": _site(res[t], t) if res[t].via_victim else None, "violation": bool(res[t].violation)}
+             "site": _site(res[t], t) if (res[t].via_victim or (res[t].leak and res[t].hit)) else None,
+             "violation": bool(res[t].violation)}
             for n, t in enumerate(order, 1)]
     ui.gate_report(script.name, kind, flaw, rows, v.passed, v.strength, v.reason)
     return v
