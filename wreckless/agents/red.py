@@ -5,6 +5,7 @@
 """
 import json
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +21,9 @@ CONTRACT = """Script contract (mandatory):
 - read env WRECKLESS_ORACLE (a file path) and WRECKLESS_NONCE
 - the payload must make the VULNERABLE VICTIM CODE write NONCE into ORACLE. Writing it
   from your own script does not count: the sandbox records who wrote the file.
-- finally print ORACLE_HIT if the oracle file contains NONCE, else ORACLE_MISS."""
+- finally print ORACLE_HIT if the oracle file contains NONCE, else ORACLE_MISS, and exit 0
+  on a hit, 1 on a miss. (The host reads the oracle file itself; output and exit code are
+  for your own debugging and never decide a verdict.)"""
 
 ATTACK_SYSTEM = f"""You are Top Hat, an offensive security agent in an isolated, authorized lab.
 Goal: write `repro_exploit.py` proving the advisory is exploitable against the victim repo,
@@ -66,11 +69,19 @@ class RedTools:
         return f"wrote {name} ({len(content)} bytes)"
 
     def git_checkout(self, branch: str) -> str:
-        return git(self.wt, "checkout", "-q", branch) or f"checked out {branch}"
+        # The ref comes from the model: never let it reach git as an option.
+        if not branch or branch.startswith("-") or any(c.isspace() or ord(c) < 32 for c in branch):
+            return f"ERROR: invalid ref {branch!r}"
+        try:
+            git(self.wt, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{branch}^{{commit}}")
+        except subprocess.CalledProcessError:
+            return f"ERROR: unknown branch/commit {branch!r}"
+        git(self.wt, "checkout", "-q", branch, "--")
+        return f"checked out {branch}"
 
     def sandbox_exec(self, script_path: str = "repro_exploit.py") -> str:
-        args = ["--agentic"] if self.s.agentic_exploit else []
-        r = self.enclave.run_exploit(self.out / Path(script_path).name, self.wt, args, _victim_env(self.s))
+        args = exploit_args(self.s)
+        r =self.enclave.run_exploit(self.out / Path(script_path).name, self.wt, args, victim_env(self.s))
         self.eligible = r.verified
         verdict = ("VERIFIED-ELIGIBLE (oracle written via victim code)" if r.verified else
                    "NOT ELIGIBLE: nonce written outside victim code" if r.hit else "ORACLE NOT REACHED")
@@ -91,7 +102,13 @@ class RedTools:
         ]
 
 
-def _victim_env(s: Settings) -> dict:
+def exploit_args(s: Settings) -> list[str]:
+    """Exploit argv for this mode; the gate, Red's sandbox and Blue's checks must all agree."""
+    return ["--agentic"] if s.agentic_exploit else []
+
+
+def victim_env(s: Settings) -> dict:
+    """Exploit env for this mode (see exploit_args)."""
     return {"VICTIM_LLM_URL": s.victim.url, "VICTIM_LLM_MODEL": s.victim.model} if s.agentic_exploit else {}
 
 
@@ -99,7 +116,10 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
            target: Target | None = None) -> Proposal | None:
     tools = RedTools(worktree, enclave, out_dir, s)
     script = out_dir / "repro_exploit.py"
-    if s.use_llm and llm.reachable(s.red):
+    failure = None  # why the LLM could not be used, if it could not
+    if s.use_llm and not llm.reachable(s.red):
+        failure = f"LLM unreachable at {s.red.url}"
+    elif s.use_llm:
         ui.say("red", f"engaging {s.red.model} — crafting exploit for {intel['id']}")
         affected = intel.get("affected_file", "unknown: find it in the repo")
         task = (f"Advisory:\n{intel['description'][:4000]}\nAffected file: {affected}\n"
@@ -107,20 +127,24 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
                 f"Hypothesis: {intel.get('hypothesis', {})}\n"
                 + ("Exploit must go through victim.assistant.answer (prompt injection into the victim LLM).\n"
                    if s.agentic_exploit else ""))
-        llm.run_agent(s.red, "red", ATTACK_SYSTEM, task, tools.tools(), lambda: tools.eligible,
-                      max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.3)
-        if script.exists() and tools.eligible:
-            return Proposal(script, "llm")
-        ui.say("red", "LLM exploit not eligible")
-        if not s.demo_mode:
-            return Proposal(script, "llm") if script.exists() else None
+        try:
+            llm.run_agent(s.red, "red", ATTACK_SYSTEM, task, tools.tools(), lambda: tools.eligible,
+                          max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.3)
+        except llm.LLMError as e:   # like an unreachable endpoint: fall back, and say so
+            failure = f"LLM error: {e}"
+            ui.say("red", failure)
+        if not failure:
+            if script.exists() and tools.eligible:
+                return Proposal(script, "llm")
+            ui.say("red", "LLM exploit not eligible")
+            if not s.demo_mode:
+                return Proposal(script, "llm") if script.exists() else None
 
     bench = (target or default_target()).bench(intel["id"])
     known = bench / "known_good" / "repro_exploit.py" if bench else None
     if not known or not known.exists():
         return None
-    why = ("" if not s.use_llm else " (demo-mode fallback)" if llm.reachable(s.red)
-           else f" (LLM unreachable at {s.red.url})")
+    why = "" if not s.use_llm else f" ({failure})" if failure else " (demo-mode fallback)"
     ui.say("red", "proposing cached reference exploit" + why)
     shutil.copy(known, script)
     return Proposal(script, "fallback")
@@ -131,8 +155,12 @@ def hunt(worktree: Path, enclave: Enclave, out_dir: Path, s: Settings) -> Propos
     if not (s.use_llm and llm.reachable(s.red)):
         return None
     tools = RedTools(worktree, enclave, out_dir, s)
-    res = llm.run_agent(s.red, "red", HUNT_SYSTEM, "Hunt the victim repo.", tools.tools(),
-                        lambda: False, max_steps=s.max_agent_steps, temperature=0.7)
+    try:
+        res = llm.run_agent(s.red, "red", HUNT_SYSTEM, "Hunt the victim repo.", tools.tools(),
+                            lambda: False, max_steps=s.max_agent_steps, temperature=0.7)
+    except llm.LLMError as e:
+        ui.say("red", f"hunt pass abandoned — LLM error: {e}")
+        return None
     script = out_dir / "repro_exploit.py"
     text = res.final or ""
     try:
