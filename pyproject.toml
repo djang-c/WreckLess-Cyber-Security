@@ -1,7 +1,7 @@
 [project]
 name = "wreckless"
 version = "0.1.0"
-description = "Always-on local-first agentic SecOps swarm (Purple/Red/Blue) for Dell Pro Max GB10"
+description = "Always-on, local-first security swarm that exploits, patches and proves the fix, on a Dell Pro Max GB10"
 readme = "README.md"
 # license: TODO, no LICENSE file in the repo yet; add `license = "<SPDX id>"` once one is chosen.
 requires-python = ">=3.12"

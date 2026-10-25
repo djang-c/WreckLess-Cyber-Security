@@ -8,8 +8,9 @@
 ![runs](https://img.shields.io/badge/live%20loop-5%2F5%20end%20to%20end-success)
 ![proof](https://img.shields.io/badge/reports-only%20with%20a%20working%20exploit-critical)
 
-**A new advisory lands. About a minute later your team has a verified exploit, a validated patch and a fix branch to review.**
-No cloud LLM. No alert without proof.
+**Reckless red teaming, safely sandboxed, so your production agents wreck less.**
+
+An always-on, local-first swarm on one Dell GB10 that exploits, patches and proves the fix in about a minute. You approve the merge.
 
 *Dell x NVIDIA AI Hackathon · San Francisco*
 
