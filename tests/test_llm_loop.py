@@ -22,7 +22,7 @@ class _Client:
         return self.replies.pop(0)
 
 
-def _run(monkeypatch, replies, done):
+def _run(monkeypatch, replies, done, nudge=2):
     client = _Client(replies)
     monkeypatch.setattr(llm, "OpenAI", lambda **kw: client)
     state = {"fixed": False}
@@ -33,7 +33,7 @@ def _run(monkeypatch, replies, done):
 
     tool = llm.Tool("fix", "", {"type": "object", "properties": {}}, fix)
     r = llm.run_agent(ModelEndpoint("http://x/v1", "m"), "blue", "sys", "task", [tool], lambda: state["fixed"] and done,
-                      max_steps=6)
+                      max_steps=6, nudge=nudge)
     return r, client, state
 
 
@@ -46,3 +46,8 @@ def test_model_that_explains_instead_of_acting_is_sent_back_to_work(monkeypatch)
 def test_nudges_are_capped(monkeypatch):
     r, client, state = _run(monkeypatch, [_msg("talk")] * 3, True)
     assert not state["fixed"] and not r.done and len(client.seen) == 3   # 1 try + 2 nudges, then it stops
+
+
+def test_no_nudge_by_default_so_a_final_answer_is_final(monkeypatch):
+    r, client, state = _run(monkeypatch, [_msg('{"title": null}')], True, nudge=0)
+    assert r.final == '{"title": null}' and len(client.seen) == 1

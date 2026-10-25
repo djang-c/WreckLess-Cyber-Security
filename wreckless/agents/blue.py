@@ -407,7 +407,7 @@ def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings
             try:
                 llm.run_agent(ep, "blue", SYSTEM, "Vulnerability report:\n" + json.dumps(public, indent=2),
                               tools.tools(), lambda: tools.tests_ok and tools.exploit_blocked,
-                              max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.2)
+                              max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.2, nudge=2)
             except llm.LLMError as e:
                 failure = f"LLM error: {e}"
                 ui.say("blue", failure + more)

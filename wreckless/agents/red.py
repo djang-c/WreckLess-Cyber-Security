@@ -129,7 +129,7 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
                    if s.agentic_exploit else ""))
         try:
             llm.run_agent(s.red, "red", ATTACK_SYSTEM, task, tools.tools(), lambda: tools.eligible,
-                          max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.3)
+                          max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.3, nudge=2)
         except llm.LLMError as e:   # like an unreachable endpoint: fall back, and say so
             failure = f"LLM error: {e}"
             ui.say("red", failure)

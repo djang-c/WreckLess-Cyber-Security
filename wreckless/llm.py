@@ -44,12 +44,14 @@ def reachable(ep: ModelEndpoint) -> bool:
 
 
 def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[Tool],
-              is_done: Callable[[], bool], max_steps: int, temperature: float = 0.2) -> AgentResult:
-    """Loop until ``is_done()`` (an external oracle) is true, the model stops, or steps run out."""
+              is_done: Callable[[], bool], max_steps: int, temperature: float = 0.2, nudge: int = 0) -> AgentResult:
+    """Loop until ``is_done()`` (an external oracle) is true, the model stops, or steps run out.
+    ``nudge``: how often a model that stops talking before the oracle passes is sent back to work.
+    Leave 0 where the final reply is the answer (Red-hunt, Purple)."""
     client = OpenAI(base_url=ep.url, api_key="local", timeout=600, max_retries=1)
     by_name = {t.name: t for t in tools}
     limit = _context_window(client)
-    nudges = 2  # times a model that stops talking before the oracle is satisfied is sent back to work
+    nudges = nudge
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
     for step in range(max_steps):
         t0 = time.time()
