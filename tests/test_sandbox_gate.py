@@ -170,6 +170,8 @@ def test_traceback_into_the_hook_is_a_violation(box):
     ("open('/proc/self/environ').read()", "environment"),
     ("import gc; gc.get_objects()", "introspection"),
     ("import sys; sys.settrace(lambda *a: None)", "introspection"),
+    ("import ctypes; ctypes.string_at(id(1), 8)", "ctypes blocked"),
+    ("import ctypes; ctypes.pythonapi.Py_IncRef", "ctypes blocked"),
     ("class P:\n    n = 0\n    def __fspath__(self):\n        P.n += 1\n        return '/etc/x' if P.n == 1 else 'tmp/ok'\n"
      "open(P(), 'w')", "blocked: /etc/x"),  # judged on the path the syscall used, not a second ask
 ])

@@ -3,7 +3,7 @@
 Backends:
 - ``userland-guard`` (default here): scrubbed env, rlimits, timeout (whole process group
   killed), and a Python audit hook that blocks non-loopback sockets and DNS, writes outside
-  <run>/tmp, frame/gc introspection and ctypes, and (when asked) reads of the held-out
+  <run>/tmp, frame/gc introspection and payload ctypes use, and (when asked) reads of the held-out
   benchmark files. It is a guard rail for Python payloads, not kernel isolation:
   ``os.system``/``subprocess`` children escape it (this host disallows unprivileged user
   namespaces, so bwrap/unshare are unavailable).
@@ -225,6 +225,21 @@ GUARD = textwrap.dedent('''
                 return None, None, frames
             return None, None, frames
 
+        def ctypes_ok(f):
+            # ctypes is fine while a module is being imported (numpy loads it) or when victim
+            # code uses it; the payload's own code (directly or through a library) may not
+            while f is not None:
+                code = f.f_code
+                fn = filereal(norm(code.co_filename))
+                if fn.startswith("<frozen importlib"):
+                    return True
+                if dynamic.get(id(code)) is code or (victim and fn.startswith(victim) and code in genuine_codes(fn)):
+                    return True
+                if not (fn.startswith("<frozen ") or fn.startswith(trusted)):
+                    return False
+                f = f.f_back
+            return False
+
         def record():
             if not (prov and key):
                 return
@@ -265,8 +280,7 @@ GUARD = textwrap.dedent('''
                   "os.setxattr": (((0, True),), None), "os.removexattr": (((0, True),), None)}
         INTROSPECT = {"gc.get_objects", "gc.get_referrers", "gc.get_referents", "sys.settrace",
                       "sys.setprofile", "sys._current_frames", "sys._current_exceptions",
-                      "sys.monitoring.register_callback", "ctypes.dlopen", "ctypes.dlsym",
-                      "ctypes.addressof", "ctypes.cdata", "ctypes.string_at", "ctypes.wstring_at"}
+                      "sys.monitoring.register_callback"}
         NET = {"socket.connect", "socket.sendto", "socket.sendmsg", "socket.bind"}
         LOOPBACK = ("127.0.0.1", "::1", "localhost")
         inet_pton, families = _socket.inet_pton, (_socket.AF_INET, _socket.AF_INET6)
@@ -348,6 +362,9 @@ GUARD = textwrap.dedent('''
                 # IP literals resolve locally; connect() still checks where they go
                 if not (type(args[0]) is str and (args[0] in LOOPBACK or is_ip(args[0]))):
                     raise violation("DNS lookup blocked: %r" % (args[0] if type(args[0]) in (str, bytes) else "?"))
+            elif event.startswith("ctypes."):
+                if not ctypes_ok(caller()):
+                    raise violation("ctypes blocked: " + event)
             elif event in INTROSPECT:
                 raise violation("introspection blocked: " + event)
             elif event == "sys.addaudithook":
