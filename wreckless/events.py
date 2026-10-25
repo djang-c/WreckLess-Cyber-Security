@@ -30,17 +30,21 @@ def replay(path: Path, speed: float = 1.0, item: str | None = None, max_gap: flo
 
     Only what was recorded is shown, through the same ``ui`` functions, tagged as a replay.
     """
-    ui.replay_tag(path.name if item is None else f"{item} in {path.name}", speed)
+    events = [ev for ev in map(json.loads, path.read_text().splitlines())
+              if not item or ev.get("item") == item]
+    recorded = events[0]["t"] if events else None
+    ui.replay_tag(path.name if item is None else f"{item} in {path.name}", speed, recorded)
     prev = None
-    for line in path.read_text().splitlines():
-        ev = json.loads(line)
-        if item and ev.get("item") != item:
-            continue
-        if prev is not None and speed > 0:
-            time.sleep(min(ev["t"] - prev, max_gap) / speed)
-        prev = ev["t"]
-        _render(ev)
-    ui.replay_tag(path.name, speed)
+    ui.REPLAYING = True
+    try:
+        for ev in events:
+            if prev is not None and speed > 0:
+                time.sleep(min(ev["t"] - prev, max_gap) / speed)
+            prev = ev["t"]
+            _render(ev)
+    finally:
+        ui.REPLAYING = False
+    ui.replay_tag(path.name, speed, recorded)
 
 
 def _render(ev: dict) -> None:

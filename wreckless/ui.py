@@ -31,6 +31,7 @@ ROLES = {
 }
 
 BOLD, DIM = "\033[1m", "\033[2m"
+REVERSE = "\033[1;7;33m"   # replay marker: bold reverse-video yellow, hard to miss
 GREEN, RED, CYAN = "\033[1;32m", "\033[1;31m", "\033[36m"
 ON_RED, ON_GREEN = "\033[41;97;1m", "\033[42;30;1m"
 PLAIN_WIDTH = 72
@@ -129,11 +130,16 @@ def _animate() -> bool:
     return color_enabled() and sys.stdout.isatty() and not os.environ.get("WRECKLESS_NO_ANIM")
 
 
+# True while `wreckless replay` renders: every trace line is marked, not just the banners.
+REPLAYING = False
+
+
 def say(role: str, msg: str, ts: float | None = None, _record: bool = True) -> None:
     """One trace line. ``ts`` lets replay print the original wall-clock time."""
     color, icon, tag = ROLES[role]
     stamp = time.strftime("%H:%M:%S", time.localtime(ts))
-    _out(f"{_c(color, f'{stamp} {icon} [{tag}]')} {msg}")
+    mark = _c(REVERSE, "REPLAY") + " " if REPLAYING else ""
+    _out(f"{mark}{_c(color, f'{stamp} {icon} [{tag}]')} {msg}")
     if _record:
         _emit(role, "say", text=msg)
 
@@ -246,7 +252,7 @@ def scoreboard(regression, functional, exploit_blocked, hardening: str | None = 
         if hardening:
             _out(f"   │ {'hardening probes (not gating)':<{inner - 9}} {hardening:^6} │")
         passed = sum(v is True for _, v in counted)
-        verdict = f"{passed}/{len(counted)} " + ("ALL PASS" if ok else "FAILED — needs a human")
+        verdict = f"{passed}/{len(counted)} passed · " + ("ALL PASS" if ok else "FAILED — needs a human")
         _out(f"   └{'─' * inner}┘  " + _c(GREEN if ok else RED, verdict))
     return ok
 
@@ -315,5 +321,11 @@ def gb10_panel(mem_total_gb: float, mem_used_gb: float, ports: list[dict], _reco
         _out(f"   └{'─' * inner}┘  {len(up)}/{len(ports)} up · {total_tok:.1f} tok/s total")
 
 
-def replay_tag(source: str, speed: float) -> None:
-    _out(_c(DIM, f"[REPLAY of {source} · recorded run, not live · speed x{speed:g}]"))
+def replay_tag(source: str, speed: float, recorded: float | None = None) -> None:
+    when = ""
+    if recorded is not None:
+        age = max(0, time.time() - recorded)
+        ago = (f"{age / 86400:.0f} d" if age >= 86400 else f"{age / 3600:.0f} h" if age >= 3600
+               else f"{age / 60:.0f} min")
+        when = f" · recorded {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(recorded))} ({ago} ago)"
+    _out(_c(REVERSE, f"[REPLAY of {source} · recorded run, not live{when} · speed x{speed:g}]"))

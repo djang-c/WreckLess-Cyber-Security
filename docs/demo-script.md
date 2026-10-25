@@ -38,7 +38,8 @@ on talk time; scroll back to each beat). Replay reproduces the recorded run's or
    orchestrator runs our held-out regression test (derived from the upstream fix, which shipped
    no test), the functional suite, and replays Red's exploit." Read the scoreboard rows.
    PATCH VALIDATED only after `patching → patched`.
-5. **Slack.** "The draft PR branch and the diff are already in Slack." If the terminal says
+5. **Slack.** "The fix branch and the diff are already in Slack. Approve records a sign-off on
+   that exact commit; in production, that's where the PR opens." If the terminal says
    `local outbox`, say Slack wasn't reachable and show `logs/slack_outbox.jsonl`.
 
 ## Contingency ladder

@@ -62,7 +62,7 @@ Knowledge only makes Red faster. It can never make Red "verify" itself: the gate
   "Blue never saw the maintainer's code" stops being true. Enforce it in retrieval and test it.
 - **Target repo conventions:** `CONTRIBUTING.md`, PR template, `CODEOWNERS`, lint/format config
   (ruff, mypy…), test layout, commit message style.
-- Add the repo's linters to validation so "Draft PR Ready" means mergeable.
+- Add the repo's linters to validation so "Fix branch ready" means mergeable.
 
 ## Storage: SQLite FTS5 first
 

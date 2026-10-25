@@ -1,4 +1,6 @@
 import io
+import json
+import time
 import re
 
 import pytest
@@ -70,7 +72,7 @@ def test_scoreboard_fails_when_any_check_false(capsys, checks):
 def test_scoreboard_all_pass(capsys):
     assert ui.scoreboard(True, True, True) is True
     out = capsys.readouterr().out
-    assert "3/3 ALL PASS" in out and "FAIL" not in out
+    assert "3/3 passed · ALL PASS" in out and "FAIL" not in out
 
 
 def test_missing_held_out_test_is_na_not_fail(capsys):
@@ -105,7 +107,7 @@ def test_replay_renders_recorded_beats(tmp_path, capsys, monkeypatch):
     replay(tmp_path / "events.jsonl", speed=0)
     out = capsys.readouterr().out
     assert out.count("REPLAY of") == 2 and "verifying → verified" in out
-    for beat in ("INTRUSION", "2/3 FAILED", "PATCH VALIDATED"):
+    for beat in ("INTRUSION", "2/3 passed · FAILED", "PATCH VALIDATED"):
         assert beat in live and beat in out
 
 
@@ -114,3 +116,50 @@ def test_public_api_unchanged():
     assert all(len(v) == 3 for v in ui.ROLES.values())
     for fn in ("say", "detail", "banner", "mascot", "scoreboard"):
         assert callable(getattr(ui, fn))
+
+
+def _record_one(tmp_path, monkeypatch):
+    from wreckless.events import EventLog
+    monkeypatch.setattr(ui, "SINK", None)
+    log = EventLog(tmp_path / "events.jsonl").attach()
+    ui.say("red", "crafting exploit")
+    log.emit("gate", "transition", "CVE-X#1", frm="verifying", to="verified")
+    ui.say("blue", "patch applied")
+    ui.SINK = None
+    return tmp_path / "events.jsonl"
+
+
+def test_every_replayed_trace_line_is_marked_replay(tmp_path, capsys, monkeypatch):
+    """A judge glancing mid-run must see REPLAY, not just in the first/last line."""
+    from wreckless.events import replay
+    path = _record_one(tmp_path, monkeypatch)
+    live = capsys.readouterr().out
+    replay(path, speed=0)
+    out = ui.strip_ansi(capsys.readouterr().out)
+    stamped = [ln for ln in out.splitlines() if re.match(r"^\S*\s*\d\d:\d\d:\d\d ", ln)]
+    assert len(stamped) == 3 and all(ln.startswith("REPLAY ") for ln in stamped)
+    assert "REPLAY" not in live
+
+
+def test_replay_banner_shows_recording_date_and_age(tmp_path, capsys, monkeypatch):
+    from wreckless.events import replay
+    path = _record_one(tmp_path, monkeypatch)
+    lines = path.read_text().splitlines()
+    old = [json.dumps(json.loads(ln) | {"t": json.loads(ln)["t"] - 86400 * 2}) for ln in lines]
+    path.write_text("\n".join(old) + "\n")
+    capsys.readouterr()
+    replay(path, speed=0)
+    out = ui.strip_ansi(capsys.readouterr().out)
+    day = time.strftime("%Y-%m-%d", time.localtime(json.loads(old[0])["t"]))
+    assert out.count(f"recorded {day}") == 2 and "2 d ago" in out
+
+
+def test_replay_mode_is_reset_even_if_replay_crashes(tmp_path, capsys, monkeypatch):
+    from wreckless.events import replay
+    path = _record_one(tmp_path, monkeypatch)
+    path.write_text(path.read_text() + "{not json\n")
+    with pytest.raises(json.JSONDecodeError):
+        replay(path, speed=0)
+    capsys.readouterr()
+    ui.say("core", "live again")
+    assert "REPLAY" not in capsys.readouterr().out
