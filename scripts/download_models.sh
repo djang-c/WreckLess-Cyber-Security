@@ -9,7 +9,7 @@ for repo in \
   cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit \
   cyankiwi/Qwen3-Coder-Next-AWQ-4bit \
   Qwen/Qwen2.5-Coder-32B-Instruct-AWQ \
-  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 ; do
+  RedHatAI/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8 ; do
   echo "[$(date +%T)] >>> $repo"
   $HF download "$repo" --local-dir "models/${repo#*/}" || echo "FAILED $repo"
 done
