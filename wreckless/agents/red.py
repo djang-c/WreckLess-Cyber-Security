@@ -20,7 +20,9 @@ CONTRACT = """Script contract (mandatory):
 - insert <victim_repo_path> at sys.path[0] and import the victim package from there
 - read env WRECKLESS_ORACLE (a file path) and WRECKLESS_NONCE
 - the payload must make the VULNERABLE VICTIM CODE write NONCE into ORACLE. Writing it
-  from your own script does not count: the sandbox records who wrote the file.
+  from your own script does not count: the sandbox records who wrote the file. The host
+  compares the file to NONCE exactly: no newline, so `echo` into it fails; use
+  open(ORACLE, "w").write(NONCE) inside the code the payload reaches.
 - finally print ORACLE_HIT if the oracle file contains NONCE, else ORACLE_MISS, and exit 0
   on a hit, 1 on a miss. (The host reads the oracle file itself; output and exit code are
   for your own debugging and never decide a verdict.)"""
@@ -92,7 +94,12 @@ class RedTools:
             shutil.copy(script, self.out / "repro_exploit.py")  # the gate only takes the contract's name
         verdict = ("VERIFIED-ELIGIBLE (oracle written via victim code)" if r.verified else
                    "NOT ELIGIBLE: nonce written outside victim code" if r.hit else "ORACLE NOT REACHED")
-        return f"[{r.backend}] {verdict}\n{r.output}"
+        hint = ""
+        if not r.hit and "ORACLE_HIT" in r.output:
+            # a script that grades itself (strip(), `in`) prints HIT while the host's exact check fails
+            hint = ("\nNOTE: your script printed ORACLE_HIT but the host's check failed: the host needs the "
+                    "oracle file to equal NONCE exactly (no trailing newline). The host's verdict is final.")
+        return f"[{r.backend}] {verdict}\n{r.output}{hint}"
 
     def tools(self) -> list[llm.Tool]:
         T, s = llm.Tool, {"type": "string"}

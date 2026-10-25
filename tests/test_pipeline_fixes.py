@@ -211,3 +211,14 @@ def test_write_file_always_saves_the_contract_script_and_sandbox_exec_finds_it(i
     ref = (BENCHMARKS / CVE / "known_good" / "repro_exploit.py").read_text()
     assert "repro_exploit.py" in tools.write_file("exploit.py", ref) and not (d / "exploit.py").exists()
     assert "VERIFIED-ELIGIBLE" in tools.sandbox_exec("exploit.py")   # the name the model remembers
+
+
+def test_a_script_that_grades_itself_is_told_the_hosts_check_is_exact(item, monkeypatch):
+    """Batch 3: `echo NONCE > oracle` leaves a newline, the script's strip() printed ORACLE_HIT, the host said no."""
+    from types import SimpleNamespace
+    wt, enclave, _, d = item
+    (d / "repro_exploit.py").write_text("print('ORACLE_HIT')\n")
+    monkeypatch.setattr(enclave, "run_exploit", lambda *a, **k: SimpleNamespace(
+        verified=False, hit=False, backend="x", output="ORACLE_HIT\n"))
+    out = red.RedTools(wt, enclave, d, Settings()).sandbox_exec("repro_exploit.py")
+    assert "ORACLE NOT REACHED" in out and "no trailing newline" in out
