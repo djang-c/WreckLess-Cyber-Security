@@ -37,6 +37,7 @@ def final_card():
 def approvers(monkeypatch):
     monkeypatch.setenv("SLACK_APPROVERS", "U123, U456")
     monkeypatch.delenv("SLACK_CHANNEL", raising=False)
+    monkeypatch.delenv("WRECKLESS_GITHUB_REPO", raising=False)   # no test may reach GitHub
 
 
 def action_body(action_id, value=None, user="U123"):
@@ -363,3 +364,63 @@ def test_preflight_makes_no_network_calls(monkeypatch):
     import socket
     monkeypatch.setattr(socket.socket, "connect", lambda *a, **k: pytest.fail("network used"))
     _check(monkeypatch, GOOD)
+
+
+# ---------- Approve -> draft PR (wreckless/publish.py) ----------
+def _approve(tmp_path, acks):
+    seen, ack = acks
+    client = FakeClient()
+    slack_socket.make_handlers(runs_dir=tmp_path)[APPROVE_ACTION](
+        ack=ack, body=action_body(APPROVE_ACTION), client=client)
+    return client.updates[-1]["blocks"][-1]["text"]["text"]
+
+
+def test_approve_opens_draft_pr_and_links_it(tmp_path, acks, monkeypatch):
+    from wreckless import publish
+    got = []
+
+    def fake(info, runs_dir):
+        assert (runs_dir / RUN_DIR / "decision.json").exists()   # recorded before anything is pushed
+        got.append(info)
+        return {"url": "https://github.com/acme/v/pull/7"}
+
+    monkeypatch.setattr(publish, "publish", fake)
+    text = _approve(tmp_path, acks)
+    assert "draft PR opened: https://github.com/acme/v/pull/7" in text
+    assert got[0]["commit"] == COMMIT and got[0]["decision"] == "approved"
+
+
+def test_failed_pr_keeps_the_approval_and_says_how_to_retry(tmp_path, acks, monkeypatch):
+    from wreckless import publish
+
+    def fail(info, runs_dir):
+        raise publish.PublishError("push failed: network unreachable")
+
+    monkeypatch.setattr(publish, "publish", fail)
+    text = _approve(tmp_path, acks)
+    assert "draft PR failed: push failed: network unreachable" in text
+    assert f"python -m wreckless.publish {RUN_ID}" in text
+    assert json.loads((tmp_path / RUN_DIR / "decision.json").read_text())["decision"] == "approved"
+
+
+def test_without_github_repo_approval_stays_local(tmp_path, acks):
+    assert "GitHub not configured: approval stays local" in _approve(tmp_path, acks)
+
+
+def test_reject_never_publishes(tmp_path, acks, monkeypatch):
+    from wreckless import publish
+    monkeypatch.setattr(publish, "publish", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pushed")))
+    seen, ack = acks
+    client = FakeClient()
+    slack_socket.make_handlers(runs_dir=tmp_path)[REJECT_ACTION](
+        ack=ack, body=action_body(REJECT_ACTION), client=client)
+    assert "Rejected by" in client.updates[-1]["blocks"][-1]["text"]["text"]
+
+
+def test_preflight_github_rows(monkeypatch):
+    monkeypatch.delenv("WRECKLESS_GITHUB_REPO", raising=False)
+    assert slack_socket._github_rows("")[0][1] == "PASS"            # optional
+    assert slack_socket._github_rows("not a repo")[0][1] == "FAIL"
+    monkeypatch.setattr(slack_socket, "_gh_logged_in", lambda: False)
+    rows = dict((r[0], r[1]) for r in slack_socket._github_rows("acme/wreckless-victim"))
+    assert rows == {"WRECKLESS_GITHUB_REPO": "PASS", "gh logged in": "FAIL"}

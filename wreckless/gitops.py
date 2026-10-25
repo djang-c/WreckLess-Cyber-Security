@@ -1,4 +1,5 @@
 """Victim repo + per-swarm worktrees."""
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,9 +11,14 @@ SAFE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "p
         "-c", "protocol.file.allow=always")
 
 
-def git(cwd: Path, *args: str) -> str:
+def git(cwd: Path, *args: str, env: dict | None = None, timeout: float | None = None) -> str:
     return subprocess.run(["git", *SAFE, *args], cwd=cwd, check=True, capture_output=True,
-                          text=True).stdout.strip()
+                          text=True, env=env, timeout=timeout).stdout.strip()
+
+
+# Fixed dates: the same victim code always gives the same base commit, so every fix branch of a
+# target shares history with one base branch on GitHub (see wreckless/publish.py).
+_EPOCH = {"GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000", "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000"}
 
 
 def init_victim(template: Path, dest: Path) -> str:
@@ -21,8 +27,8 @@ def init_victim(template: Path, dest: Path) -> str:
         "target.json", "heldout_adapter.py", "inventory.json", "__pycache__", ".git"))
     git(dest, "init", "-q", "-b", "main")
     git(dest, "-c", "user.name=victim", "-c", "user.email=victim@local", "add", "-A")
-    git(dest, "-c", "user.name=victim", "-c", "user.email=victim@local",
-        "commit", "-q", "-m", "victim app (vulnerable)")
+    git(dest, "-c", "user.name=victim", "-c", "user.email=victim@local", "-c", "commit.gpgsign=false",
+        "commit", "-q", "-m", "victim app (vulnerable)", env={**os.environ, **_EPOCH})
     return git(dest, "rev-parse", "HEAD")
 
 

@@ -2,8 +2,9 @@
 
 Socket Mode is outbound-only (wss to *.slack.com), so it survives the cloud-LLM airgap.
 Enabled only if `slack_bolt` is importable AND SLACK_BOT_TOKEN + SLACK_APP_TOKEN are set;
-otherwise `start_listener()` logs one line and returns None. Nothing here pushes to git or
-calls GitHub: a decision only records `<items>/<item>/decision.json` (default callback).
+otherwise `start_listener()` logs one line and returns None. A decision records
+`<items>/<item>/decision.json`; an approval then pushes the approved commit and opens a draft
+PR (wreckless/publish.py) only if WRECKLESS_GITHUB_REPO is set. Rejections never push.
 
 Only Slack user IDs in SLACK_APPROVERS (comma-separated) may decide; unset means nobody can.
 If SLACK_CHANNEL is a channel ID, clicks from any other channel are ignored. The first
@@ -119,6 +120,16 @@ def _deny(client, channel: str | None, user: str, text: str) -> None:
         _log(f"ephemeral failed: {e}")
 
 
+def _publish_note(info: dict, out: dict) -> str:
+    at = f"{info['run_id']} @ {(info['commit'] or '?')[:10]}"
+    if out.get("pr"):
+        return f"draft PR opened: {out['pr']['url']} ({at})"
+    if out.get("pr_error"):
+        return (f"approval recorded for {at}, but the draft PR failed: {out['pr_error'][:200]}. "
+                f"Retry on the host: python -m wreckless.publish {info['run_id']}")
+    return f"recorded decision.json for {at} (GitHub not configured: approval stays local)"
+
+
 def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None = None,
                   runs_dir: Path = ITEMS, approvers: set[str] | None = None) -> dict[str, Callable]:
     """Return {action_id: handler}. Handlers use Bolt's kwarg injection (ack, body, client)."""
@@ -128,7 +139,16 @@ def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None
             raise ValueError("decision refused (unsafe or missing run_id)")
         return out
 
-    on_approve = on_approve or default
+    def default_approve(info: dict) -> dict:
+        path = default(info)   # the approval is on disk before anything leaves the box
+        from wreckless import publish
+        try:
+            return {"path": path, "pr": publish.publish(info, runs_dir)}
+        except Exception as e:  # noqa: BLE001  the approval stands; the PR can be retried
+            _log(f"draft PR failed for {info.get('run_id')}: {e}")
+            return {"path": path, "pr_error": str(e)}
+
+    on_approve = on_approve or default_approve
     on_reject = on_reject or default
 
     def handle(decision: str, callback: Decision, ack, body: dict, client) -> None:
@@ -157,7 +177,9 @@ def make_handlers(on_approve: Decision | None = None, on_reject: Decision | None
             note = None
             try:
                 out = callback(info)
-                if isinstance(out, Path):
+                if isinstance(out, dict):
+                    note = _publish_note(info, out)
+                elif isinstance(out, Path):
                     note = f"recorded {out.name} for {info['run_id']} @ {(info['commit'] or '?')[:10]}"
             except AlreadyDecided as e:
                 return _deny(client, channel, user, f"{info['run_id']} was already {e}; click ignored")
@@ -273,7 +295,32 @@ def preflight() -> tuple[bool, list[tuple[str, str, str]]]:
         "unset: nobody can approve" if not raw else
         f"{', '.join(bad)}: use member IDs (profile → ⋮ → Copy member ID, e.g. U01AB), not names")
     row("slack-bolt installed", _bolt_installed(), "yes", "no: uv sync --extra slack")
+    rows.extend(_github_rows(env("WRECKLESS_GITHUB_REPO", "")))
     return all(r[1] == "PASS" for r in rows), rows
+
+
+def _gh_logged_in() -> bool:
+    """Local only: `gh auth token` reads the stored credential, it does not call GitHub."""
+    import shutil
+    import subprocess
+    if not shutil.which("gh"):
+        return False
+    try:
+        return subprocess.run(["gh", "auth", "token"], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _github_rows(repo: str) -> list[tuple[str, str, str]]:
+    if not repo:
+        return [("WRECKLESS_GITHUB_REPO", "PASS", "unset (optional): Approve stays a local sign-off, no PR")]
+    from wreckless.publish import _REPO
+    ok = bool(_REPO.match(repo))
+    gh = _gh_logged_in()
+    return [("WRECKLESS_GITHUB_REPO", "PASS" if ok else "FAIL",
+             f"{repo} (Approve pushes + opens a draft PR)" if ok else f"{repo}: must be owner/name"),
+            ("gh logged in", "PASS" if gh else "FAIL",
+             "yes" if gh else "no: install gh, then gh auth login && gh auth setup-git")]
 
 
 def print_preflight(ok: bool, rows: list[tuple[str, str, str]]) -> None:
