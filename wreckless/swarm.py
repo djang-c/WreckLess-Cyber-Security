@@ -257,10 +257,19 @@ class Swarm:
         (d / "fix.patch").write_text(diff)
         ui.diff("blue", diff or "(no diff)", limit=1500)
         v = blue.validate(blue_wt, enclave, report, self.target, self.s)
+        attempts = 1
+        if diff and patch_source == "llm" and v.regression is False and not v.rejected:
+            # one more try, told only that a hidden check found the fix incomplete (reported as 2 attempts)
+            ui.say("blue", "a hidden check found the fix incomplete → one more attempt")
+            diff, patch_source = blue.defend(report, blue_wt, enclave, d, self.s, self.target, retry=blue.RETRY_NOTE)
+            (d / "fix.patch").write_text(diff)
+            ui.diff("blue", diff or "(no diff)", limit=1500)
+            v = blue.validate(blue_wt, enclave, report, self.target, self.s)
+            attempts = 2
         ui.scoreboard(v.regression, v.functional, v.exploit_blocked, v.hardening)
         (d / "validation.json").write_text(json.dumps(v.logs, indent=2))
         if not diff or not v.ok:
-            self.queue.advance(item_id, "patch_failed", "blue", summary=v.summary())
+            self.queue.advance(item_id, "patch_failed", "blue", summary=v.summary(), attempts=attempts)
             failed = [] if not diff else ["patch rules"] if v.rejected else [
                 n for n, ok in (("held-out regression", v.regression), ("functional", v.functional),
                                 ("exploit blocked", v.exploit_blocked)) if ok is False]
@@ -272,7 +281,7 @@ class Swarm:
         fix_commit = commit_all(blue_wt, f"fix({item_id}): {item.title[:60]}\n\n"
                                          f"Patch source: {src_label}. {v.summary()}")
         self.queue.advance(item_id, "patched", "blue", branch=branch, commit=fix_commit, source=patch_source,
-                           summary=v.summary())
+                           summary=v.summary(), attempts=attempts)
         ui.patch_validated(item_id, branch, fix_commit, patch_source)
         elapsed = time.time() - t0
         slack.bind(branch=branch, commit=fix_commit, patch_source=patch_source)

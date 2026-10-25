@@ -250,3 +250,24 @@ def test_read_file_lists_a_directory_and_hints_on_bad_paths(tools):
     assert "victim/vector_sql.py" in tools.read_file("victim")
     assert "relative to the repo root" in tools.read_file("/etc/passwd")
     assert "read_file(" in tools.read_file("nope.py")
+
+
+def test_a_retry_note_reaches_felix_and_a_first_attempt_has_none(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from wreckless.agents import blue as blue_mod
+    seen = []
+    monkeypatch.setattr(blue_mod.llm, "reachable", lambda ep: True)
+    monkeypatch.setattr(blue_mod.llm, "run_agent", lambda ep, role, system, task, *a, **k: seen.append((system, task)))
+    monkeypatch.setattr(blue_mod, "worktree_diff", lambda wt: "diff --git a b")
+    s = SimpleNamespace(use_llm=True, demo_mode=False, max_agent_steps=3, blue=SimpleNamespace(url="u", model="m"),
+                        blue_fallback=SimpleNamespace(url="u", model="m"))
+    s.blue_fallback = s.blue
+    tools_stub = SimpleNamespace(tests_ok=False, exploit_blocked=False, tools=lambda: [],
+                                 generate_openshell_egress_rule=lambda d: None)
+    monkeypatch.setattr(blue_mod, "BlueTools", lambda *a, **k: tools_stub)
+    (tmp_path / "openshell_policy.json").write_text("{}")
+    report = {"id": "X#1", "attack_trace": "t"}
+    blue_mod.defend(report, tmp_path, None, tmp_path, s)
+    blue_mod.defend(report, tmp_path, None, tmp_path, s, retry=blue_mod.RETRY_NOTE)
+    assert blue_mod.RETRY_NOTE not in seen[0][1] and blue_mod.RETRY_NOTE in seen[1][1]
+    assert "denylist" in seen[0][0] and "heldout" not in blue_mod.RETRY_NOTE.lower()

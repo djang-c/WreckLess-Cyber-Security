@@ -27,7 +27,14 @@ interpreter hooks are read-only, and a patch touching them fails validation.
 Workflow: read_file the vulnerable code -> edit_file or git_apply_patch -> run_pytest on the
 repo's tests -> run_exploit to confirm it is now blocked -> generate_openshell_egress_rule for any
 domain the service legitimately needs (none for this target: call it with domain "none").
+A filter that lists names (a denylist) is easy to bypass: aliases, getattr/builtins indirection and
+other spellings reach the same thing. When the root cause is such a filter, close the whole class of
+access structurally; do not add one more name.
 Stop when run_pytest passes and run_exploit reports BLOCKED."""
+
+RETRY_NOTE = ("A hidden check judged your fix incomplete: the vulnerable behaviour can still be reached "
+              "another way. Your edits are still in the repo. Generalize the fix to close the whole class "
+              "of access, not one name or spelling, then run_pytest and run_exploit again.")
 
 CACHED_LABEL = "CACHED REFERENCE PATCH — not AI-generated"
 
@@ -387,7 +394,8 @@ def _endpoints(s: Settings) -> list:
 
 
 def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings,
-           target: Target | None = None) -> tuple[str, str]:
+           target: Target | None = None, retry: str | None = None) -> tuple[str, str]:
+    """``retry``: a second attempt on the same worktree, told why the first was not enough."""
     tools = BlueTools(wt, enclave, report, item_dir, s)
     failure = None  # why no Blue LLM could be used, if none could
     if s.use_llm:
@@ -405,8 +413,8 @@ def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings
                 continue
             ui.say("blue", f"engaging {ep.model} — remediating {report['id']}")
             try:
-                llm.run_agent(ep, "blue", SYSTEM, "Vulnerability report:\n" + json.dumps(public, indent=2),
-                              tools.tools(), lambda: tools.tests_ok and tools.exploit_blocked,
+                llm.run_agent(ep, "blue", SYSTEM, "Vulnerability report:\n" + json.dumps(public, indent=2)
+                              + (f"\n\n{retry}" if retry else ""), tools.tools(), lambda: tools.tests_ok and tools.exploit_blocked,
                               max_steps=s.max_agent_steps, temperature=0 if s.demo_mode else 0.2, nudge=2)
             except llm.LLMError as e:
                 failure = f"LLM error: {e}"
