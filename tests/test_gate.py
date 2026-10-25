@@ -191,3 +191,17 @@ def test_vulnerable_and_control_trees_look_alike(tmp_path):
 def test_known_limit_gc_dig_forgery_is_rejected(tmp_path):
     v = _verify(tmp_path, BYPASS / "a8_gc_dig_forge.py", "CVE-2024-21513")
     assert not v.passed, v.reason
+
+
+def test_control_is_really_patched_inside_another_git_repo(tmp_path):
+    """runs/ sits inside the WreckLess repo. There `git apply` used to exit 0 without touching
+    the control (paths resolved from the outer repo root), so every real exploit got REJECTED."""
+    import shutil
+    import subprocess
+    outer = tmp_path / "outer"
+    subprocess.run(["git", "init", "-q", str(outer)], check=True)
+    tree = outer / "runs" / "item" / "victim"
+    shutil.copytree(TARGETS / "victim_app", tree)
+    kind = gate._neutralize(tree, BENCHMARKS / "CVE-2024-21513" / "known_good" / "fix.patch")
+    assert kind == "reference-patched"
+    assert "ast.literal_eval" in (tree / "victim" / "vector_sql.py").read_text()
