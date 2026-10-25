@@ -172,3 +172,20 @@ def test_calm_keeps_block_text_readable():
     t = tui.calm("\033[42;30;1m PATCH VALIDATED \033[0m")
     [sp] = [s for s in t.spans if s.style]
     assert sp.style.bgcolor is None and sp.style.color.number == 2   # ANSI green
+
+
+def test_story_keeps_moving_between_findings_in_24_7_mode():
+    """Regression 2026-10-25: after a rejection the headline froze on 'Not proven' while Ralph kept hunting."""
+    st = tui.RunState()
+    for e in ({"kind": "enqueue", "actor": "core", "t": 1, "item": "X#1"},
+              {"kind": "transition", "actor": "gate", "t": 2, "item": "X#1", "frm": "queued", "to": "verifying"},
+              {"kind": "transition", "actor": "gate", "t": 3, "item": "X#1", "frm": "verifying", "to": "rejected"}):
+        st.apply(e)
+    assert st.phase == "rejected"
+    st.apply({"kind": "tool", "actor": "red", "t": 9, "item": None, "name": "read_file"})   # a hunt pass
+    assert st.phase == "hunt" and "Ralph hunts" in tui.headline(st).plain
+    assert "last finding: not proven" in tui.headline(st).plain
+    st.apply({"kind": "say", "actor": "core", "t": 40, "item": None, "text": "up 0h01m · 20 candidates"})
+    assert st.phase == "hunt" and st.pulse.startswith("up 0h01m")
+    st.apply({"kind": "enqueue", "actor": "core", "t": 50, "item": "X#2"})
+    assert st.phase == "find"                                    # a new finding takes over the story

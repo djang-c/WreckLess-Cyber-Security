@@ -157,6 +157,8 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
     bench = (target or default_target()).bench(intel["id"])
     known = bench / "known_good" / "repro_exploit.py" if bench else None
     if not known or not known.exists():
+        if failure:   # say why, or the item is rejected as "no exploit proposed" with no clue
+            ui.say("red", f"no exploit for {intel['id']}: {failure} and no cached reference exploit")
         return None
     why = "" if not s.use_llm else f" ({failure})" if failure else " (demo-mode fallback)"
     ui.say("red", "proposing cached reference exploit" + why)

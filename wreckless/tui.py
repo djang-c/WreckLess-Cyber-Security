@@ -67,6 +67,8 @@ class RunState:
     done: dict = field(default_factory=dict)       # final state -> count
     gates: list = field(default_factory=list)      # every gate_report, with its item and time
     phase: str = "idle"                            # plain-language step (STEPS / HEADLINES)
+    last: str = "idle"                             # the outcome before the swarm went back to hunting
+    pulse: str = ""                                # the daemon's last heartbeat line
     t0: float | None = None
     t_end: float | None = None
 
@@ -96,6 +98,16 @@ class RunState:
 
     def _phase(self, ev: dict) -> None:
         kind = ev.get("kind")
+        idle = self.phase in ("idle", "hunt", "watch") or self.phase in self.END_PHASE.values()
+        # between findings the 24/7 swarm keeps working: say what it is doing instead of freezing
+        if idle and ev.get("actor") == "red" and not ev.get("item") and kind in ("mascot", "task", "tool", "step"):
+            self.phase, self.last = "hunt", self.phase if self.phase not in ("hunt", "watch") else self.last
+            return
+        if idle and kind == "say" and ev.get("actor") == "core" and str(ev.get("text", "")).startswith("up "):
+            if self.phase != "hunt":
+                self.phase, self.last = "watch", self.phase if self.phase not in ("hunt", "watch") else self.last
+            self.pulse = str(ev["text"])
+            return
         if kind == "enqueue" or (kind == "mascot" and ev.get("actor") == "purple"):
             self.phase, self.t0, self.t_end = "find", ev.get("t"), None
         elif kind == "mascot" and ev.get("actor") in self.PHASE_OF:
@@ -111,7 +123,7 @@ class RunState:
 STEPS = [("find", "Find", "Scout"), ("attack", "Attack", "Ralph"), ("prove", "Prove", "Verifier"),
          ("fix", "Fix", "Felix"), ("approve", "Approve", "a human")]
 STEP_AT = {"idle": -1, "find": 0, "attack": 1, "prove": 2, "fix": 3, "approve": 4, "done": 5,
-           "rejected": 2, "fix_failed": 3, "failed": -1}
+           "rejected": 2, "fix_failed": 3, "failed": -1, "hunt": 1, "watch": -1}
 HEADLINES = {
     "idle": "Press ▶ Run the demo. Five AI agents find, prove and fix a real security bug, all on this machine.",
     "find": "Scout reads the security advisory and works out where the bug lives.",
@@ -124,7 +136,11 @@ HEADLINES = {
     "rejected": "Not proven: the Verifier rejected the attack, so nothing gets patched. No false alarms.",
     "fix_failed": "The patch did not pass every test, so it is held back for a human. Nothing broken ships.",
     "failed": "Something crashed. The item was stopped safely.",
+    "hunt": "Between findings, Ralph hunts for new flaws in the code on his own. Anything he finds goes to the Verifier.",
+    "watch": "Watching. Scout re-checks the advisories every 10 minutes; new matches start the next finding.",
 }
+LAST = {"done": "last finding: fix ready for review", "rejected": "last finding: not proven, nothing patched",
+        "fix_failed": "last finding: patch held back for a human", "failed": "last finding: stopped after a crash"}
 CVE_NAMES = {"CVE-2024-21513": "LangChain SQL code injection", "CVE-2023-44467": "LangChain sandbox escape"}
 TARGET_NAMES = {"victim_app": "mini replica", "langchain": "real LangChain code"}
 ROLE_CARDS = {"red": ("Scout + Ralph", "investigate & attack"), "blue": ("Felix", "writes the fix"),
@@ -159,6 +175,8 @@ def headline(st: RunState, override: str | None = None) -> Text:
     text = HEADLINES.get(st.phase, "")
     if st.phase in ("done", "rejected", "fix_failed") and st.t0 and st.t_end:
         text += f"  ({st.t_end - st.t0:.0f} s)"
+    if st.phase in ("hunt", "watch") and st.last in LAST:
+        text += f"  ({LAST[st.last]})"
     color = {"rejected": "bold red", "fix_failed": "bold red", "failed": "bold red"}
     return Text(text, style=color.get(st.phase, "bold"), justify="center")
 
@@ -505,6 +523,8 @@ class WrecklessApp(App):
         for b in ("run", "runai"):
             self.main.query_one(f"#{b}", Button).disabled = running
         rep = " · REPLAY" if self.replay_q else ""
+        if self.state.pulse:   # the 24/7 daemon's heartbeat: it is alive even when nothing is in flight
+            rep += " · swarm " + self.state.pulse[:70]
         self.sub_title = (f"{self.home} · {self.target} · {self.cve} · Slack "
                           f"{'ON' if self.slack else 'off'}{' · RUNNING' if running else ''}{rep}")
 
