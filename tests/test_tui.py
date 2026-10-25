@@ -118,3 +118,35 @@ def test_nothing_reaches_the_real_terminal_while_captured(capsys):
     lines = tui.render_lines(ev, 80)
     assert any("INTRUSION" in ln for ln in lines)
     assert capsys.readouterr().out == ""
+
+
+def test_story_follows_the_run_in_plain_words(home):
+    st = tui.RunState()
+    assert "Press ▶ Run the demo" in tui.headline(st).plain
+    seen = []
+    for e in events(home):
+        st.apply(e)
+        if not seen or seen[-1] != st.phase:
+            seen.append(st.phase)
+    assert seen == ["find", "attack", "prove", "fix", "approve", "done"]
+    assert "Nothing ships until a human clicks Approve" in tui.headline(st).plain
+    assert tui.steps_bar(st).plain.count("✓") == 5
+
+
+def test_rejected_run_says_so_and_marks_the_prove_step():
+    st = tui.RunState()
+    for e in ({"kind": "enqueue", "actor": "core", "t": 1, "item": "X#1"},
+              {"kind": "mascot", "actor": "red", "t": 2},
+              {"kind": "transition", "actor": "gate", "t": 3, "item": "X#1", "frm": "queued", "to": "verifying"},
+              {"kind": "transition", "actor": "gate", "t": 9, "item": "X#1", "frm": "verifying", "to": "rejected"}):
+        st.apply(e)
+    assert st.phase == "rejected" and "No false alarms" in tui.headline(st).plain
+    bar = tui.steps_bar(st).plain
+    assert "✗ 3 Prove" in bar and bar.count("✓") == 2
+
+
+def test_offline_card_names_the_model_not_the_port_alias():
+    from wreckless import models
+    from wreckless.config import ModelEndpoint
+    up, ckpt = models.serving(ModelEndpoint("http://127.0.0.1:9/v1", "blue"))
+    assert not up and models.friendly(ckpt)[0] == "Qwen3 Coder Next 80B"

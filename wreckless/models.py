@@ -32,6 +32,35 @@ class Option:
     status: str           # "ready" (switch, instant) | "swap" (reload the role's port)
     detail: str = ""
     dir: str | None = None   # vLLM checkpoint dir (swap)
+    ckpt: str = ""           # checkpoint (vLLM dir name or Ollama tag): what `friendly()` names
+
+    @property
+    def name(self) -> str:
+        return friendly(self.ckpt or self.model)[0]
+
+    @property
+    def blurb(self) -> str:
+        return friendly(self.ckpt or self.model)[1]
+
+
+# Plain names for people watching (the ad, the stage); unknown models fall back to their own id.
+FRIENDLY = {
+    "Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit": ("Qwen3 Coder 30B", "fast coding model"),
+    "Qwen3-Coder-Next-AWQ-4bit": ("Qwen3 Coder Next 80B", "the strongest coding model here"),
+    "Qwen2.5-Coder-32B-Instruct-AWQ": ("Qwen2.5 Coder 32B", "backup coding model"),
+    "Qwen2.5-Coder-7B-Instruct-AWQ": ("Qwen2.5 Coder 7B", "small model, plays the target app's AI"),
+    "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-FP8": ("NVIDIA Nemotron 3.5 Lightning 30B", "NVIDIA reasoning model"),
+}
+
+
+def friendly(ckpt: str) -> tuple[str, str]:
+    base = Path(ckpt).name
+    if base in FRIENDLY:
+        return FRIENDLY[base]
+    if ":" in base:   # Ollama tag, e.g. qwen3:8b
+        fam, size = base.split(":", 1)
+        return f"{fam.replace('-', ' ').title()} {size.upper()}", "runs in Ollama on this machine"
+    return base, ""
 
 
 def _get(url: str, timeout: float = 1.5):
@@ -77,7 +106,7 @@ def vllm_options(role: str, host: str = "127.0.0.1", models_dir: Path = ROOT / "
             ckpt = Path(m.get("root") or m["id"]).name
             loaded.add(ckpt)
             out.append(Option(f"{m['id']} on :{port} ({ckpt})", "vllm", f"http://{host}:{port}/v1", m["id"],
-                              "ready", f"loaded on {r}'s port"))
+                              "ready", f"loaded on {r}'s port", ckpt=ckpt))
     own = PORTS.get(role)
     for row in catalog():
         if row["dir"] in loaded or own is None:
@@ -86,7 +115,7 @@ def vllm_options(role: str, host: str = "127.0.0.1", models_dir: Path = ROOT / "
         out.append(Option(row["dir"], "vllm", f"http://{host}:{own}/v1", ROUTED[role][2],
                           "swap" if on_disk else "missing",
                           f"load on :{own} (util {row['util']}, parser {row['parser']})"
-                          + ("" if on_disk else " · not downloaded"), row["dir"]))
+                          + ("" if on_disk else " · not downloaded"), row["dir"], ckpt=row["dir"]))
     return out
 
 
@@ -100,7 +129,7 @@ def ollama_options(base: str = OLLAMA) -> list[Option]:
         name = m["name"]
         size = f"{m.get('size', 0) / 2**30:.1f} GB"
         out.append(Option(name, "ollama", f"{base}/v1", name, "ready" if name in resident else "swap",
-                          f"ollama · {size} · " + ("in memory" if name in resident else "on disk")))
+                          f"ollama · {size} · " + ("in memory" if name in resident else "on disk"), ckpt=name))
     return out
 
 
@@ -108,6 +137,18 @@ def options(role: str) -> list[Option]:
     """Everything the role could use right now: loaded first (instant), then swap-ins."""
     opts = vllm_options(role) + ollama_options()
     return sorted(opts, key=lambda o: {"ready": 0, "swap": 1, "missing": 2}[o.status])
+
+
+def serving(ep) -> tuple[bool, str]:
+    """(up, checkpoint) for an endpoint: what a role is really talking to right now."""
+    d = _get(ep.url.rstrip("/") + "/models")
+    if not d:   # down: name what that role's port normally serves (e.g. "red" -> Qwen3 Coder 30B)
+        row = next((r for r in catalog() if r["role"] == ep.model), None)
+        return False, row["dir"] if row else ep.model
+    for m in d.get("data", []):
+        if m.get("id") == ep.model:
+            return True, Path(m.get("root") or m["id"]).name
+    return True, ep.model
 
 
 def _save(data: dict) -> None:

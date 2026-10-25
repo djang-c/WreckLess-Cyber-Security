@@ -23,7 +23,7 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (Button, DataTable, Footer, Header, Label, OptionList, RichLog, Static,
                              TabbedContent, TabPane)
@@ -66,9 +66,13 @@ class RunState:
     notified: str | None = None
     done: dict = field(default_factory=dict)       # final state -> count
     gates: list = field(default_factory=list)      # every gate_report, with its item and time
+    phase: str = "idle"                            # plain-language step (STEPS / HEADLINES)
+    t0: float | None = None
+    t_end: float | None = None
 
     def apply(self, ev: dict) -> None:
         kind, item = ev.get("kind"), ev.get("item")
+        self._phase(ev)
         if kind == "transition":
             if item != self.item and ev.get("frm") in ("queued", None):
                 self.item, self.states, self.score, self.gate, self.notified = item, [], None, None, None
@@ -85,6 +89,78 @@ class RunState:
                 self.gate = rec
         elif kind == "notified" and item == self.item:
             self.notified = ev.get("channel")
+
+
+    PHASE_OF = {"purple": "find", "red": "attack", "gate": "prove", "blue": "fix", "core": "approve"}
+    END_PHASE = {"rejected": "rejected", "patch_failed": "fix_failed", "notified": "done", "failed": "failed"}
+
+    def _phase(self, ev: dict) -> None:
+        kind = ev.get("kind")
+        if kind == "enqueue" or (kind == "mascot" and ev.get("actor") == "purple"):
+            self.phase, self.t0, self.t_end = "find", ev.get("t"), None
+        elif kind == "mascot" and ev.get("actor") in self.PHASE_OF:
+            if self.phase not in self.END_PHASE.values() or ev.get("actor") == "purple":
+                self.phase = self.PHASE_OF[ev["actor"]]
+        elif kind == "gate_report":
+            self.phase = "prove"
+        elif kind == "transition" and ev.get("to") in self.END_PHASE:
+            self.phase, self.t_end = self.END_PHASE[ev["to"]], ev.get("t")
+
+
+# The five steps a viewer follows, and one plain sentence for each moment.
+STEPS = [("find", "Find", "Scout"), ("attack", "Attack", "Ralph"), ("prove", "Prove", "Verifier"),
+         ("fix", "Fix", "Felix"), ("approve", "Approve", "a human")]
+STEP_AT = {"idle": -1, "find": 0, "attack": 1, "prove": 2, "fix": 3, "approve": 4, "done": 5,
+           "rejected": 2, "fix_failed": 3, "failed": -1}
+HEADLINES = {
+    "idle": "Press ▶ Run the demo. Five AI agents find, prove and fix a real security bug, all on this machine.",
+    "find": "Scout reads the security advisory and works out where the bug lives.",
+    "attack": "Ralph writes a real attack and fires it inside a locked sandbox.",
+    "prove": "The Verifier re-runs the attack on fresh copies: it must break the buggy code and fail on the "
+             "fixed code, or it does not count.",
+    "fix": "Felix writes a patch. Then it is tested: the attack must fail now, and nothing else may break.",
+    "approve": "The fix is ready and goes to Slack. A human approves it from anywhere.",
+    "done": "Fix ready for review in Slack. Nothing ships until a human clicks Approve.",
+    "rejected": "Not proven: the Verifier rejected the attack, so nothing gets patched. No false alarms.",
+    "fix_failed": "The patch did not pass every test, so it is held back for a human. Nothing broken ships.",
+    "failed": "Something crashed. The item was stopped safely.",
+}
+CVE_NAMES = {"CVE-2024-21513": "LangChain SQL code injection", "CVE-2023-44467": "LangChain sandbox escape"}
+TARGET_NAMES = {"victim_app": "mini replica", "langchain": "real LangChain code"}
+ROLE_CARDS = {"red": ("Scout + Ralph", "investigate & attack"), "blue": ("Felix", "writes the fix"),
+              "victim": ("Target app's AI", "the one being attacked")}
+
+
+def steps_bar(st: RunState) -> Text:
+    at, bad = STEP_AT.get(st.phase, -1), st.phase in ("rejected", "fix_failed")
+    t = Text(justify="center")
+    for i, (_, label, who) in enumerate(STEPS):
+        if i:
+            t.append("  ──  ", style="dim")
+        if bad and i == at:
+            t.append(f" ✗ {i + 1} {label} ", style="bold white on red")
+        elif i < at or st.phase == "done":
+            t.append(f" ✓ {i + 1} {label} ", style="bold black on green")
+        elif i == at:
+            t.append(f" ▶ {i + 1} {label} ", style="bold black on yellow")
+        else:
+            t.append(f"   {i + 1} {label} ", style="dim")
+    t.append("\n")
+    for i, (_, _, who) in enumerate(STEPS):
+        if i:
+            t.append("      ")
+        t.append(f"{who:^{len(STEPS[i][1]) + 6}}", style="dim")
+    return t
+
+
+def headline(st: RunState, override: str | None = None) -> Text:
+    if override:
+        return Text(override, style="bold yellow", justify="center")
+    text = HEADLINES.get(st.phase, "")
+    if st.phase in ("done", "rejected", "fix_failed") and st.t0 and st.t_end:
+        text += f"  ({st.t_end - st.t0:.0f} s)"
+    color = {"rejected": "bold red", "fix_failed": "bold red", "failed": "bold red", "done": "bold green"}
+    return Text(text, style=color.get(st.phase, "bold"), justify="center")
 
 
 def item_panel(st: RunState) -> Text:
@@ -174,42 +250,134 @@ def run_env(slack: bool) -> dict:
 class Confirm(ModalScreen[bool]):
     DEFAULT_CSS = """
     Confirm { align: center middle; }
-    #box { width: 72; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
+    #box { width: 76; height: auto; border: thick $warning; background: $surface; padding: 1 2; }
     #box Horizontal { height: auto; margin-top: 1; }
     """
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, yes: str = "Load it"):
         super().__init__()
-        self.text = text
+        self.text, self.yes = text, yes
 
     def compose(self) -> ComposeResult:
         with Vertical(id="box"):
             yield Label(self.text)
             with Horizontal():
-                yield Button("Swap", variant="warning", id="yes")
+                yield Button(self.yes, variant="warning", id="yes")
                 yield Button("Cancel", id="no")
 
     def on_button_pressed(self, e: Button.Pressed) -> None:
         self.dismiss(e.button.id == "yes")
 
 
+class ModelPicker(ModalScreen):
+    """Plain chooser for one agent's AI model. Returns ("switch"|"swap", Option) or None."""
+    DEFAULT_CSS = """
+    ModelPicker { align: center middle; }
+    #pick { width: 96; height: 26; border: thick $accent; background: $surface; padding: 1 2; }
+    #pick OptionList { height: 1fr; margin: 1 0; }
+    #pick Horizontal { height: auto; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "Close")]
+
+    def __init__(self, role: str):
+        super().__init__()
+        self.role, self.opts = role, []
+
+    def compose(self) -> ComposeResult:
+        who, job = ROLE_CARDS[self.role]
+        with Vertical(id="pick"):
+            yield Label(Text.assemble(("Choose the AI model for ", "bold"), (who, "bold cyan"),
+                                      (f"  ({job})", "dim")))
+            yield Label(Text("Green: already running, switches instantly.  Yellow: stored on disk, "
+                             "loaded into memory in place of the current one (a few minutes).", style="dim"))
+            yield OptionList(id="choices")
+            with Horizontal():
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#choices", OptionList).add_option(ListOption("looking for models…", disabled=True))
+        self._load()
+
+    @work(thread=True, exclusive=True)
+    def _load(self) -> None:
+        opts = models.options(self.role)
+        self.app.call_from_thread(self._show, opts)
+
+    def _show(self, opts: list) -> None:
+        self.opts = opts
+        ol = self.query_one("#choices", OptionList)
+        ol.clear_options()
+        if not opts:
+            ol.add_option(ListOption("no models found (is vLLM or Ollama running?)", disabled=True))
+        for n, o in enumerate(opts):
+            if o.status == "ready":
+                tag, note = ("● ready  ", "green"), "running, switch now"
+            elif o.status == "swap":
+                tag, note = ("● load   ", "yellow"), "on disk, load it in"
+            else:
+                tag, note = ("○ absent ", "dim"), "not downloaded"
+            ol.add_option(ListOption(Text.assemble(tag, (o.name, "bold"), f"  {o.blurb}", (f"  · {note}", "dim")),
+                                     id=str(n), disabled=o.status == "missing"))
+
+    def on_option_list_option_selected(self, e: OptionList.OptionSelected) -> None:
+        o = self.opts[int(e.option.id)]
+        self.dismiss(("switch" if o.status == "ready" else "swap", o))
+
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class BrainCard(Vertical):
+    """One agent: which AI model it uses right now, whether it answers, and a Change button."""
+
+    def __init__(self, role: str):
+        super().__init__(id=f"card-{role}", classes="card")
+        self.role = role
+
+    def compose(self) -> ComposeResult:
+        who, job = ROLE_CARDS[self.role]
+        yield Static(Text.assemble((who, "bold"), (f" · {job}", "dim")), classes="who")
+        yield Static("…", id=f"model-{self.role}", classes="model")
+        yield Button("Change model", id=f"change-{self.role}", variant="primary", classes="change")
+
+    def show(self, up: bool, ckpt: str) -> None:
+        name, blurb = models.friendly(ckpt)
+        self.query_one(f"#model-{self.role}", Static).update(Text.assemble(
+            ("● " if up else "○ ", "green" if up else "red"), (name, "bold"),
+            (f"  {'running' if up else 'offline'}", "green" if up else "red")))
+
+
 class WrecklessApp(App):
     TITLE = "WreckLess"
+    SUB_TITLE = "local AI security team"
     CSS = """
-    #flock { height: 11; content-align: center middle; }
-    #log { width: 3fr; border: round $primary; }
+    #top { height: 1fr; }
+    #stage { width: 3fr; }
+    #steps { height: 3; margin-top: 1; content-align: center middle; }
+    #headline { height: 2; padding: 0 2; }
+    #flock { height: 10; content-align: center middle; }
+    #log { height: 1fr; min-height: 6; border: round $primary; }
     #side { width: 1fr; min-width: 34; }
-    #item { border: round $secondary; height: 1fr; }
+    #item_box { border: round $secondary; height: 1fr; }
     #gb10 { border: round $accent; height: auto; min-height: 6; }
+    #brains { height: 7; }
+    .card { width: 1fr; border: round $accent; padding: 0 1; }
+    .card .change { width: 100%; min-width: 16; height: 3; }
+    #controls { height: 3; }
+    #controls Button { width: 1fr; min-width: 12; }
     #gates { width: 1fr; } #gate_detail { width: 1fr; border: round $warning; }
     #roles { height: 7; } #opts { height: 1fr; border: round $primary; } #swaplog { height: 12; border: round $warning; }
     """
     BINDINGS = [
-        Binding("r", "launch(False)", "Scripted run"), Binding("d", "launch(True)", "Demo run (LLM)"),
-        Binding("c", "cycle_cve", "CVE"), Binding("t", "cycle_target", "Target"),
-        Binding("s", "toggle_slack", "Slack on/off"), Binding("p", "replay", "Replay last"),
-        Binding("1", "tab('live')", "Live", show=False), Binding("2", "tab('gate')", "Gate", show=False),
-        Binding("3", "tab('queue')", "Queue", show=False), Binding("4", "tab('models')", "Models", show=False),
+        Binding("r", "launch(False)", "Run demo"), Binding("d", "launch(True)", "Run with AI"),
+        Binding("m", "pick('blue')", "Change model"), Binding("p", "replay", "Replay"),
+        Binding("c", "cycle_cve", "Bug", show=False), Binding("t", "cycle_target", "Code", show=False),
+        Binding("s", "toggle_slack", "Slack", show=False),
+        Binding("1", "tab('live')", "Live", show=False), Binding("2", "tab('gate')", "Proof", show=False),
+        Binding("3", "tab('queue')", "Findings", show=False), Binding("4", "tab('models')", "AI Models", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -225,24 +393,39 @@ class WrecklessApp(App):
         self.proc = None
         self.role = "red"
         self.opts: list[models.Option] = []
+        self.busy: str | None = None   # headline override while a model loads
 
     def compose(self) -> ComposeResult:
         yield Header()
         with TabbedContent(initial="live"):
             with TabPane("Live [1]", id="live"):
-                yield Static(id="flock")
-                with Horizontal():
-                    yield RichLog(id="log", wrap=False, markup=False, max_lines=4000)
+                with Horizontal(id="top"):
+                    with Vertical(id="stage"):
+                        yield Static(id="steps")
+                        yield Static(id="headline")
+                        yield Static(id="flock")
+                        yield RichLog(id="log", wrap=False, markup=False, max_lines=4000)
                     with Vertical(id="side"):
-                        yield Static(id="item")
+                        with VerticalScroll(id="item_box"):
+                            yield Static(id="item")
                         yield Static(id="gb10")
-            with TabPane("Gate [2]", id="gate"):
+                with Horizontal(id="brains"):
+                    for role in ("red", "blue", "victim"):
+                        yield BrainCard(role)
+                with Horizontal(id="controls"):
+                    yield Button("▶ Run the demo", id="run", variant="success")
+                    yield Button("Run with live AI", id="runai", variant="primary")
+                    yield Button("⟲ Replay", id="replay")
+                    yield Button("", id="cve")
+                    yield Button("", id="target")
+                    yield Button("", id="slack")
+            with TabPane("Proof [2]", id="gate"):
                 with Horizontal():
                     yield DataTable(id="gates", cursor_type="row")
                     yield RichLog(id="gate_detail", wrap=True, markup=False)
-            with TabPane("Queue [3]", id="queue"):
+            with TabPane("Findings [3]", id="queue"):
                 yield DataTable(id="queue_table", cursor_type="row")
-            with TabPane("Models [4]", id="models"):
+            with TabPane("AI Models [4]", id="models"):
                 yield DataTable(id="roles", cursor_type="row")
                 yield OptionList(id="opts")
                 yield RichLog(id="swaplog", wrap=True, markup=False)
@@ -253,34 +436,48 @@ class WrecklessApp(App):
         self.query_one("#gates", DataTable).add_columns("time", "item", "exploit", "control", "verdict")
         self.query_one("#queue_table", DataTable).add_columns("item", "source", "cve", "state", "label", "title")
         self.query_one("#roles", DataTable).add_columns("role", "uses model", "at")
-        self.query_one("#item", Static).border_title = "item · gate · checks"
-        self.query_one("#gb10", Static).border_title = "GB10"
-        self.query_one("#log", RichLog).border_title = "swarm log"
-        self.query_one("#gate_detail", RichLog).border_title = "gate evidence"
-        self.query_one("#opts", OptionList).border_title = "options (Enter: ready = switch now, swap = reload port)"
-        self.query_one("#swaplog", RichLog).border_title = "model swaps"
-        self._subtitle()
+        self.query_one("#item_box").border_title = "this finding"
+        self.query_one("#gb10", Static).border_title = "GB10 · memory and speed"
+        self.query_one("#log", RichLog).border_title = "what the agents are doing"
+        self.query_one("#gate_detail", RichLog).border_title = "the proof"
+        self.query_one("#opts", OptionList).border_title = "options"
+        self.query_one("#swaplog", RichLog).border_title = "model changes"
+        self.query_one("#brains").border_title = "AI brains (all local)"
+        self._labels()
         if self.replay_from:
             self._start_replay(self.replay_from)
         else:
             self._backfill()
+        if not self.state.gates:
+            self.query_one("#gate_detail", RichLog).write(Text(
+                "No proofs recorded yet. Press ▶ Run the demo: the Verifier re-runs the attack on 2 buggy "
+                "copies and 1 fixed copy, in random order, each with a fresh secret, and every run shows here.",
+                style="dim"))
+        self._story()
         self.set_interval(0.25, self._poll)
         self.set_interval(1 / 8, self._draw_flock)
         self.set_interval(2.0, self._sample_gb10)
         self.set_interval(2.0, self._refresh_queue)
-        if not self.state.gates:
-            self.query_one("#gate_detail", RichLog).write(Text(
-                "No gate verdicts recorded in this home yet. Press r for a scripted run: the verifier "
-                "re-runs the exploit on 2 vulnerable copies and 1 control, in random order, each with a "
-                "fresh nonce, and every run shows up here.", style="dim"))
+        self.set_interval(3.0, self._probe_brains)
         self._refresh_roles()
         self._sample_gb10()
+        self._probe_brains()
 
-    def _subtitle(self) -> None:
-        run = " · RUNNING" if self.proc and self.proc.poll() is None else ""
+    def _labels(self) -> None:
+        running = bool(self.proc and self.proc.poll() is None)
+        self.query_one("#cve", Button).label = f"Bug: {CVE_NAMES.get(self.cve, self.cve)}"
+        self.query_one("#target", Button).label = f"Code: {TARGET_NAMES[self.target]}"
+        sl = self.query_one("#slack", Button)
+        sl.label, sl.variant = ("Slack: ON", "warning") if self.slack else ("Slack: off", "default")
+        for b in ("run", "runai"):
+            self.query_one(f"#{b}", Button).disabled = running
         rep = " · REPLAY" if self.replay_q else ""
         self.sub_title = (f"{self.home} · {self.target} · {self.cve} · Slack "
-                          f"{'ON' if self.slack else 'off'}{run}{rep}")
+                          f"{'ON' if self.slack else 'off'}{' · RUNNING' if running else ''}{rep}")
+
+    def _story(self) -> None:
+        self.query_one("#steps", Static).update(steps_bar(self.state))
+        self.query_one("#headline", Static).update(headline(self.state, self.busy))
 
     def _backfill(self) -> None:
         """Fold the whole log into state, but only render the recent tail (fast on a long daemon log)."""
@@ -307,7 +504,8 @@ class WrecklessApp(App):
                         continue
                     if isinstance(ev, dict) and "kind" in ev:
                         self._handle(ev)
-        self._subtitle()
+        self._labels()
+        self._story()
 
     def _fold(self, ev: dict) -> None:
         self.flock.apply(ev)
@@ -340,6 +538,12 @@ class WrecklessApp(App):
         snap = self._mon.sample()
         self.call_from_thread(self.query_one("#gb10", Static).update, gb10_text(snap))
 
+    @work(thread=True, exclusive=True, group="brains")
+    def _probe_brains(self) -> None:
+        for role, ep in models.current().items():
+            up, ckpt = models.serving(ep)
+            self.call_from_thread(self.query_one(f"#card-{role}", BrainCard).show, up, ckpt)
+
     def _refresh_queue(self) -> None:
         t = self.query_one("#queue_table", DataTable)
         rows = queue_rows(self.home / "queue.db")
@@ -365,7 +569,9 @@ class WrecklessApp(App):
                                     **{k: g[k] for k in ("script", "control", "flaw", "runs", "passed",
                                                          "strength", "reason")}}, 90):
                 out.write(Text.from_ansi(ln))
-            out.write(Text(f"\nitem {g.get('item')} · each copy got a fresh nonce; the control must stay clean",
+            out.write(Text("\nHow to read this: the attack ran on two copies of the buggy code and one copy "
+                           "with the fix, in random order, each with a fresh secret. It only counts if it "
+                           "breaks both buggy copies through the flawed function and fails on the fixed one.",
                            style="dim"))
         elif e.data_table.id == "roles" and e.row_key.value:
             self.role = e.row_key.value
@@ -375,9 +581,8 @@ class WrecklessApp(App):
     def _refresh_roles(self) -> None:
         t = self.query_one("#roles", DataTable)
         t.clear()
-        names = {"red": "red  (Scout + Ralph)", "blue": "blue (Felix)", "victim": "victim (target LLM)"}
         for role, ep in models.current().items():
-            t.add_row(names[role], ep.model, ep.url, key=role)
+            t.add_row(f"{ROLE_CARDS[role][0]} ({role})", ep.model, ep.url, key=role)
 
     @work(thread=True, exclusive=True, group="opts")
     def _load_options(self, role: str) -> None:
@@ -388,56 +593,94 @@ class WrecklessApp(App):
         self.opts = opts
         ol = self.query_one("#opts", OptionList)
         ol.clear_options()
-        tag = {"ready": ("READY", "green"), "swap": ("SWAP ", "yellow"), "missing": ("  —  ", "dim")}
+        tag = {"ready": ("READY", "green"), "swap": ("LOAD ", "yellow"), "missing": ("  —  ", "dim")}
         for i, o in enumerate(opts):
             word, color = tag[o.status]
-            ol.add_option(ListOption(Text.assemble((f"[{word}] ", color), (o.label, "bold"), f"  {o.detail}"),
+            ol.add_option(ListOption(Text.assemble((f"[{word}] ", color), (o.name, "bold"),
+                                                   f"  {o.label} · {o.detail}"),
                                      id=str(i), disabled=o.status == "missing"))
-        ol.border_title = f"options for {role} (Enter: READY = switch now, SWAP = unload + load on its port)"
+        ol.border_title = f"options for {role} (Enter: READY = switch now, LOAD = unload + load on its port)"
 
     def on_option_list_option_selected(self, e: OptionList.OptionSelected) -> None:
+        if e.option_list.id != "opts":
+            return
         o = self.opts[int(e.option.id)]
-        log = self.query_one("#swaplog", RichLog)
-        if o.status == "ready":
-            models.switch(self.role, o.url, o.model)
-            log.write(Text(f"{time.strftime('%H:%M:%S')} {self.role} → {o.model} @ {o.url} (switch; next item)",
-                           style="green"))
+        self._choose(self.role, ("switch" if o.status == "ready" else "swap", o))
+
+    def action_pick(self, role: str) -> None:
+        self.push_screen(ModelPicker(role), lambda res: self._choose(role, res))
+
+    def _choose(self, role: str, res) -> None:
+        if not res:
+            return
+        how, o = res
+        who = ROLE_CARDS[role][0]
+        if how == "switch":
+            models.switch(role, o.url, o.model)
+            self._note(f"{who} now uses {o.name} (from the next finding on)")
+            self.notify(f"{who} → {o.name}", title="Model switched")
             self._refresh_roles()
+            self._probe_brains()
             return
 
         def go(ok: bool | None) -> None:
             if ok:
-                self._swap(self.role, o)
-        self.push_screen(Confirm(f"Swap {self.role}: unload its current model and load\n{o.label}\n\n{o.detail}\n\n"
-                                 "The role is offline until the new model answers (vLLM: minutes).\n"
-                                 "If it fails to load, the old model is started again."), go)
+                self._swap(role, o)
+        self.push_screen(Confirm(f"Load {o.name} for {who}?\n\n{o.blurb}\n\nThe model {who} uses now is "
+                                 f"unloaded first, then {o.name} is loaded from disk into the same slot. {who} "
+                                 "is offline until it answers (a few minutes on the GB10). If it fails to "
+                                 "load, the old model comes back."), go)
+
+    def _note(self, msg: str) -> None:
+        self.query_one("#swaplog", RichLog).write(Text(f"{time.strftime('%H:%M:%S')} {msg}"))
 
     @work(thread=True, exclusive=True, group="swap")
     def _swap(self, role: str, o) -> None:
-        log = self.query_one("#swaplog", RichLog)
-        say = lambda m: self.call_from_thread(log.write, Text(f"{time.strftime('%H:%M:%S')} {m}"))  # noqa: E731
-        say(f"swap {role} → {o.label} …")
+        who = ROLE_CARDS[role][0]
+        say = lambda m: self.call_from_thread(self._note, m)  # noqa: E731
+        self.busy = f"Loading {o.name} into {who}'s slot… {who} is offline until it answers."
+        say(f"{who}: unloading, then loading {o.name}")
         ok = models.swap(role, o, log=say)
-        say("done" if ok else "FAILED (see above)")
+        self.busy = None
+        say(f"{who} now runs {o.name}" if ok else f"{who}: loading {o.name} failed, old model restored")
+        self.call_from_thread(self.notify, f"{who} → {o.name}" if ok else f"could not load {o.name}",
+                              title="Model loaded" if ok else "Model change failed",
+                              severity="information" if ok else "error")
         self.call_from_thread(self._refresh_roles)
-        self.call_from_thread(self._load_options, role)
+        self.call_from_thread(self._probe_brains)
 
-    # ----- actions -----
+    # ----- buttons + actions -----
+    def on_button_pressed(self, e: Button.Pressed) -> None:
+        bid = e.button.id or ""
+        if bid.startswith("change-"):
+            self.action_pick(bid.removeprefix("change-"))
+        elif bid in ("run", "runai"):
+            self.action_launch(bid == "runai")
+        elif bid == "replay":
+            self.action_replay()
+        elif bid == "cve":
+            self.action_cycle_cve()
+        elif bid == "target":
+            self.action_cycle_target()
+        elif bid == "slack":
+            self.action_toggle_slack()
+
     def action_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
 
     def action_cycle_cve(self) -> None:
         self.cve = CVES[(CVES.index(self.cve) + 1) % len(CVES)]
-        self._subtitle()
+        self._labels()
 
     def action_cycle_target(self) -> None:
         self.target = TARGETS[(TARGETS.index(self.target) + 1) % len(TARGETS)]
-        self._subtitle()
+        self._labels()
 
     def action_toggle_slack(self) -> None:
         self.slack = not self.slack
-        self.notify(f"Slack {'ON: launched runs post cards' if self.slack else 'off: cards go to the outbox'}")
-        self._subtitle()
+        self.notify("runs now post their card to Slack" if self.slack else "cards stay on this machine (outbox)",
+                    title=f"Slack {'ON' if self.slack else 'off'}")
+        self._labels()
 
     def action_launch(self, llm: bool) -> None:
         if self.proc and self.proc.poll() is None:
@@ -449,9 +692,11 @@ class WrecklessApp(App):
         with open(ROOT / "logs" / "tui_run.log", "ab") as logf:   # the child keeps its own copy of the fd
             self.proc = subprocess.Popen(cmd, cwd=ROOT, env=run_env(self.slack), stdout=logf, stderr=logf,
                                          stdin=subprocess.DEVNULL)
+        self.state.phase, self.state.t0 = "find", time.time()
         self.query_one(TabbedContent).active = "live"
-        self.notify(f"{'demo' if llm else 'scripted'} run: {self.cve} on {self.target}"
-                    + (" · Slack ON" if self.slack else ""))
+        self.notify(f"{CVE_NAMES.get(self.cve, self.cve)} · {TARGET_NAMES[self.target]}"
+                    + (" · with live AI" if llm else " · scripted"), title="Run started")
+        self._labels()
 
     def action_replay(self) -> None:
         self._start_replay(self.events)
@@ -463,8 +708,8 @@ class WrecklessApp(App):
             self.notify("nothing recorded to replay yet", severity="warning")
             return
         last = done[-1]
-        self.replay_q = [e for e in evs if e.get("item") in (last, None) and e["t"] >= next(
-            x["t"] for x in evs if x.get("item") == last)]
+        start = next(x["t"] for x in evs if x.get("item") == last)
+        self.replay_q = [e for e in evs if e.get("item") in (last, None) and e["t"] >= start - 1]
         self.replay_t0 = (time.time(), self.replay_q[0]["t"])
         self.flock, self.state = mascots.Flock(), RunState()
         self.query_one("#gates", DataTable).clear()   # its row keys index state.gates
