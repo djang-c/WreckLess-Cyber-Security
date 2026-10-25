@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from wreckless import ui
 from wreckless.events import EventLog
 
 LIFECYCLE = {
@@ -75,6 +76,7 @@ class CandidateQueue:
                               (new, label, json.dumps(item.history), time.time(), item_id))
             self.conn.commit()
         self.events.emit(actor, "transition", item_id, frm=item.state, to=new, data=data)
+        ui.transition(item_id, item.state, new, actor)
         return self.get(item_id)
 
     def update_payload(self, item_id: str, **fields) -> None:

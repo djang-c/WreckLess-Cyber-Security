@@ -29,6 +29,7 @@ class Swarm:
     # ---------- producers ----------
     def submit_cve(self, cve: str) -> str:
         self.events.item.id = None
+        ui.mascot("purple")
         intel = purple.ingest(cve, self.s)
         item_id = self.queue.enqueue("purple", intel["summary"], cve=cve, payload={"intel": intel})
         ui.say("purple", f"{item_id} queued as \033[1mPREDICTION\033[0m")
@@ -80,12 +81,15 @@ class Swarm:
         if not self.queue.try_advance(item_id, "verifying", "gate", commit=commit):
             return "skipped"  # another worker claimed it first
         red_wt = worktree(src, d / "wt-red", f"red/{item_id.replace('#', '-')}")
+        ui.mascot("red")
         if item.source == "purple":
             prop = red.attack(item.payload["intel"], red_wt, enclave, d, self.s)
             script, source = (prop.script, prop.source) if prop else (None, None)
         else:
             script, source = Path(item.payload["script"]), "llm"
         args = ["--agentic"] if self.s.agentic_exploit else []
+        if script:
+            ui.mascot("gate")
         verdict = gate.verify(script, red_wt, enclave, args, red._victim_env(self.s)) if script else None
         if not verdict or not verdict.verified:
             reason = verdict.reason if verdict else "no exploit proposed"
@@ -104,7 +108,7 @@ class Swarm:
         report_path = d / "vulnerability_report.json"
         report_path.write_text(json.dumps(report, indent=2))
         self.queue.advance(item_id, "verified", "gate", report=str(report_path))
-        ui.say("red", f"\033[41;97m EXPLOIT VERIFIED \033[0m {item_id} · {script.name} ({source})")
+        ui.intrusion(item_id, script.name, source)
         slack = Notifier(run_id=item_id, enclave=enclave.backend)
         slack.send("red", f"🚨 Intrusion reproduced: {item_id}",
                    f"Commit `{commit[:10]}` exploitable · {verdict.reason}\n"
@@ -112,13 +116,14 @@ class Swarm:
 
         # patching: Blue in its own worktree; validation is not Blue's call
         self.queue.advance(item_id, "patching", "blue")
+        ui.mascot("blue")
         branch = f"wreckless/fix-{item_id.replace('#', '-')}"
         blue_wt = worktree(src, d / "wt-blue", branch)
         diff, patch_source = blue.defend(report, blue_wt, enclave, d, self.s)
         (d / "fix.patch").write_text(diff)
-        ui.detail("blue", diff or "(no diff)", limit=1500)
+        ui.diff("blue", diff or "(no diff)", limit=1500)
         v = blue.validate(blue_wt, enclave, report)
-        ui.say("blue", v.summary())
+        ui.scoreboard(v.regression, v.functional, v.exploit_blocked, v.hardening)
         (d / "validation.json").write_text(json.dumps(v.logs, indent=2))
         if not diff or not v.ok:
             self.queue.advance(item_id, "patch_failed", "blue", summary=v.summary())
@@ -128,12 +133,14 @@ class Swarm:
         fix_commit = commit_all(blue_wt, f"fix({item_id}): {item.title[:60]}\n\n"
                                          f"Patch source: {patch_source}. {v.summary()}")
         self.queue.advance(item_id, "patched", "blue", branch=branch, commit=fix_commit, source=patch_source)
+        ui.patch_validated(item_id, branch, fix_commit, patch_source)
         elapsed = time.time() - t0
         slack.bind(branch=branch, commit=fix_commit, patch_source=patch_source)
         via = slack.send("blue", f"✅ Draft PR Ready: {item_id}",
                          f"Branch `{branch}` @ `{fix_commit[:10]}` · patch: {patch_source}\n"
                          f"{v.summary()} · {elapsed:.0f}s\n```{diff[:1500]}```")
         self.queue.advance(item_id, "notified", "core", channel=via, elapsed_s=round(elapsed, 1))
+        ui.notified(item_id, via)
         ui.say("core", f"{item_id} done in {elapsed:.1f}s → {d}")
         return "notified"
 

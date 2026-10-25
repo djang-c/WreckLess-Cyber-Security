@@ -15,7 +15,7 @@ class EventLog:
         self.item = threading.local()  # item id that terminal output belongs to, per thread
 
     def attach(self) -> "EventLog":
-        ui.SINK = lambda role, kind, text: self.emit(role, kind, text=text)
+        ui.SINK = lambda role, kind, **data: self.emit(role, kind, **data)
         return self
 
     def emit(self, actor: str, kind: str, item: str | None = None, **data) -> None:
@@ -26,18 +26,37 @@ class EventLog:
 
 
 def replay(path: Path, speed: float = 1.0, item: str | None = None, max_gap: float = 3.0) -> None:
-    """Re-render a recorded run with its original pacing (gaps capped, then divided by speed)."""
+    """Re-render a recorded run with its original pacing (gaps capped, then divided by speed).
+
+    Only what was recorded is shown, through the same ``ui`` functions, tagged as a replay.
+    """
+    ui.replay_tag(path.name if item is None else f"{item} in {path.name}", speed)
     prev = None
     for line in path.read_text().splitlines():
         ev = json.loads(line)
         if item and ev.get("item") != item:
             continue
-        if prev is not None:
+        if prev is not None and speed > 0:
             time.sleep(min(ev["t"] - prev, max_gap) / speed)
         prev = ev["t"]
-        if ev["kind"] == "say":
-            ui.say(ev["actor"], ev["text"], _record=False)
-        elif ev["kind"] == "detail":
-            ui.detail(ev["actor"], ev["text"], _record=False)
-        elif ev["kind"] == "banner":
-            ui.banner(ev["text"], _record=False)
+        _render(ev)
+    ui.replay_tag(path.name, speed)
+
+
+def _render(ev: dict) -> None:
+    kind, actor, t = ev["kind"], ev["actor"], ev["t"]
+    args = {k: v for k, v in ev.items() if k not in ("t", "actor", "kind", "item")}
+    if kind == "transition":
+        ui.transition(ev["item"], ev["frm"], ev["to"], actor, ts=t)
+    elif kind == "say":
+        ui.say(actor, ev["text"], ts=t, _record=False)
+    elif kind in ("detail", "diff"):
+        getattr(ui, kind)(actor, ev["text"], _record=False)
+    elif kind == "mascot":
+        ui.mascot(actor, _record=False)
+    elif kind == "notified":
+        ui.notified(ev["item"], ev["channel"], ts=t, _record=False)
+    elif kind in ("intrusion", "patch_validated"):
+        getattr(ui, kind)(ev["item"], **args, _record=False)
+    elif kind in ui.REPLAYABLE:
+        getattr(ui, kind)(**args, _record=False)
