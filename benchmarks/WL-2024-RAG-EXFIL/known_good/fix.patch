@@ -1,0 +1,33 @@
+diff --git a/victim/render.py b/victim/render.py
+index 2348fa9..9597634 100644
+--- a/victim/render.py
++++ b/victim/render.py
+@@ -5,8 +5,9 @@ the flaw: whoever controls the text of an answer controls a request from the use
+ """
+ import html
+ import re
++from urllib.parse import urlsplit
+ 
+-from victim import egress
++from victim import config, egress
+ 
+ _IMAGE = re.compile(
+     r"!\[(?P<alt>[^\]]*)\]\(\s*<?(?P<inline>[^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)"   # ![a](url "title")
+@@ -18,8 +19,17 @@ _LINK = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)\)")
+ _BOLD = re.compile(r"\*\*(.+?)\*\*")
+ 
+ 
++def _allowed(url: str) -> bool:
++    """Only images the workspace itself hosts load automatically, and without a query string."""
++    u = urlsplit(url)
++    return (u.scheme == "https" and u.hostname == config.FILES_HOST and u.username is None
++            and not u.query and not u.fragment)
++
++
+ def _img(alt: str, url: str) -> str:
+     url = html.unescape(url)
++    if not _allowed(url):
++        return f"[image blocked: {html.escape(alt)}]"
+     egress.fetch(url)
+     return f'<img alt="{html.escape(alt)}" src="{html.escape(url)}">'
+ 
