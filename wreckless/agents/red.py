@@ -115,7 +115,9 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
     known = BENCHMARKS / intel["id"] / "known_good" / "repro_exploit.py"
     if not known.exists():
         return None
-    ui.say("red", "proposing cached reference exploit" + (" (demo-mode fallback)" if s.use_llm else ""))
+    why = ("" if not s.use_llm else " (demo-mode fallback)" if llm.reachable(s.red)
+           else f" (LLM unreachable at {s.red.url})")
+    ui.say("red", "proposing cached reference exploit" + why)
     shutil.copy(known, script)
     return Proposal(script, "fallback")
 

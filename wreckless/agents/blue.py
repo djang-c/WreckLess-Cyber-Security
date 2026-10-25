@@ -296,8 +296,9 @@ def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings
     known = BENCHMARKS / str(report.get("cve")) / "known_good" / "fix.patch"
     if not known.exists():
         return "", "none"
-    ui.say("blue", f"applying \033[1;43;30m {CACHED_LABEL} \033[0m"
-                   + (" (demo-mode fallback)" if s.use_llm else ""))
+    why = ("" if not s.use_llm else " (demo-mode fallback)" if llm.reachable(ep)
+           else f" (LLM unreachable at {ep.url})")
+    ui.say("blue", f"applying \033[1;43;30m {CACHED_LABEL} \033[0m" + why)
     git(wt, "checkout", "-q", "--", ".")
     ui.detail("blue", tools.git_apply_patch(known.read_text()))
     tools.generate_openshell_egress_rule("none")
