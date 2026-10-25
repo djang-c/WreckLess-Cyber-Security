@@ -158,6 +158,17 @@ class CandidateQueue:
         rows = self._read("SELECT id FROM items WHERE state='queued' ORDER BY created LIMIT 1")
         return rows[0][0] if rows else None
 
+    def hunt_findings(self) -> list[tuple[str, str]]:
+        """(title, flawed file) of every Red-hunt candidate so far, whatever happened to it."""
+        return [(t, json.loads(p).get("file", "")) for t, p in
+                self._read("SELECT title, payload FROM items WHERE source='red-hunt' ORDER BY created")]
+
+    def busy(self) -> bool:
+        """The worker has something to do: an item is queued or in flight (not yet terminal)."""
+        marks = ",".join("?" * len(FAILURE))
+        return bool(self._read(f"SELECT 1 FROM items WHERE state='queued' OR state IN ({marks}) LIMIT 1",
+                               tuple(FAILURE)))
+
     def has_cve(self, cve: str) -> bool:
         return bool(self._read("SELECT 1 FROM items WHERE cve=?", (cve,)))
 

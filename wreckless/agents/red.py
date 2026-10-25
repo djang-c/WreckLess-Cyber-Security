@@ -164,13 +164,22 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
     return Proposal(script, "fallback")
 
 
-def hunt(worktree: Path, enclave: Enclave, out_dir: Path, s: Settings) -> Proposal | None:
-    """One hunting pass. Output is a PREDICTION until the gate says otherwise."""
+def _hunt_task(known: list[str] | None) -> str:
+    if not known:
+        return "Hunt the victim repo."
+    seen = "\n".join(f"- {t}" for t in known[-10:])
+    return f"Hunt the victim repo.\nAlready reported, do not report these again (find a different flaw):\n{seen}"
+
+
+def hunt(worktree: Path, enclave: Enclave, out_dir: Path, s: Settings,
+         known: list[str] | None = None) -> Proposal | None:
+    """One hunting pass. Output is a PREDICTION until the gate says otherwise.
+    ``known``: titles of earlier findings, so the next pass looks somewhere else."""
     if not (s.use_llm and llm.reachable(s.red)):
         return None
     tools = RedTools(worktree, enclave, out_dir, s)
     try:
-        res = llm.run_agent(s.red, "red", HUNT_SYSTEM, "Hunt the victim repo.", tools.tools(),
+        res = llm.run_agent(s.red, "red", HUNT_SYSTEM, _hunt_task(known), tools.tools(),
                             lambda: False, max_steps=s.max_agent_steps, temperature=0.7)
     except llm.LLMError as e:
         ui.say("red", f"hunt pass abandoned — LLM error: {e}")

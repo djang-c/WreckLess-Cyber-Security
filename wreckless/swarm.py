@@ -1,5 +1,6 @@
 """Always-on swarm: two producers (scheduled Purple, continuous Red-hunt) -> one queue ->
 one verify gate -> Blue -> validation -> notify. Each item walks its own lifecycle."""
+import difflib
 import json
 import os
 import threading
@@ -34,6 +35,8 @@ class Swarm:
         self.intel = IntelDB(INTEL_DB)
         self.target = targets.load(s.target)
         self.target.ensure()
+        self.doing = {"hunt": "starting", "worker": "idle"}   # what each loop is up to, for the heartbeat
+        self.hunt_stats = {"passes": 0, "found": 0, "dupes": 0}
 
     def hero_active(self) -> bool:
         """A hero run is in flight here or in another process sharing this home."""
@@ -116,7 +119,9 @@ class Swarm:
     def red_hunt_loop(self, pause: float = 5.0) -> None:
         """Continuous: propose candidate flaws. Yields to the hero item (bandwidth on one GPU)."""
         while not self.stop.is_set():
-            if self.hero_active():
+            # one GPU: hunting waits for the hero and for any item the worker has queued or in flight
+            if self.hero_active() or self.queue.busy():
+                self.doing["hunt"] = "paused (worker busy)"
                 self.stop.wait(pause)
                 continue
             try:
@@ -129,18 +134,36 @@ class Swarm:
 
     def _hunt_pass(self) -> None:
         n, d = self._new_hunt_dir()
+        self.doing["hunt"] = f"pass {n} exploring"
+        self.hunt_stats["passes"] += 1
+        known = [t for t, _ in self.queue.hunt_findings()]
         wt = d / "victim"
         init_victim(self.target.source, wt)
         enclave = self._enclave(d)
         try:
-            prop = red.hunt(wt, enclave, d, self.s)
+            prop = red.hunt(wt, enclave, d, self.s, known)
         finally:
             enclave.close()
-        if prop:
+        self.doing["hunt"] = f"pass {n} done"
+        if prop and (dup := self._duplicate(prop)):
+            self.hunt_stats["dupes"] += 1
+            ui.say("red", f"hunt pass {n}: same flaw as “{dup}” — dropped")
+        elif prop:
+            self.hunt_stats["found"] += 1
             item_id = self.queue.enqueue("red-hunt", prop.title, payload={
                 "hunt_dir": str(d), "script": str(prop.script), "file": prop.file,
                 "hypothesis": prop.hypothesis})
             ui.say("red", f"hunt pass {n}: candidate {item_id} \033[1mPREDICTION\033[0m — {prop.title}")
+
+    def _duplicate(self, prop: red.Proposal) -> str | None:
+        """Title of an earlier hunt finding this one repeats: the model words it differently each
+        pass, so compare titles loosely, and more loosely when the flawed file is the same."""
+        mine = prop.title.lower()
+        for title, file in self.queue.hunt_findings():
+            ratio = difflib.SequenceMatcher(None, mine, title.lower()).ratio()
+            if ratio >= 0.75 or (file and file == prop.file and ratio >= 0.5):
+                return title
+        return None
 
     # ---------- the per-item lifecycle ----------
     def process(self, item_id: str, claimed: bool = False) -> str:
@@ -279,8 +302,10 @@ class Swarm:
             # pick + claim in one transaction: no other worker or hero can take it in between
             item_id = None if self.hero_active() else self.queue.claim_next("gate")
             if not item_id:
+                self.doing["worker"] = "idle"
                 self.stop.wait(2)
                 continue
+            self.doing["worker"] = f"working on {item_id}"
             try:
                 self.process(item_id, claimed=True)   # fails the item itself if it crashes
             except Exception as e:  # one bad item must not kill the worker thread
@@ -288,10 +313,12 @@ class Swarm:
 
     def liveness(self) -> str:
         st, up = self.queue.stats(), int(time.time() - self.started)
-        by = st["by_label"]
+        by, h = st["by_label"], self.hunt_stats
         return (f"up {up // 3600}h{up % 3600 // 60:02d}m · {st['total']} candidates · "
                 f"{by.get('VERIFIED', 0)} verified · {by.get('REJECTED', 0)} rejected · "
-                f"{st['by_state'].get('notified', 0)} fix cards sent")
+                f"{st['by_state'].get('notified', 0)} fix cards sent · "
+                f"hunt: {self.doing['hunt']} ({h['passes']} passes, {h['found']} new, {h['dupes']} repeats) · "
+                f"worker: {self.doing['worker']}")
 
     def run_daemon(self, purple_interval: float, hunt: bool, slack_listener: bool = False,
                    heartbeat: float = 30) -> None:
