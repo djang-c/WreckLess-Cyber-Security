@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from wreckless import ui
 from wreckless.events import EventLog
 
 LIFECYCLE = {
@@ -75,6 +76,7 @@ class CandidateQueue:
                               (new, label, json.dumps(item.history), time.time(), item_id))
             self.conn.commit()
         self.events.emit(actor, "transition", item_id, frm=item.state, to=new, data=data)
+        ui.transition(item_id, item.state, new, actor)
         return self.get(item_id)
 
     def update_payload(self, item_id: str, **fields) -> None:
@@ -82,6 +84,28 @@ class CandidateQueue:
             payload = self.get(item_id).payload | fields
             self.conn.execute("UPDATE items SET payload=? WHERE id=?", (json.dumps(payload), item_id))
             self.conn.commit()
+
+    def try_advance(self, item_id: str, new: str, actor: str, **data) -> Item | None:
+        """advance(), but None instead of raising if another worker already moved the item."""
+        try:
+            return self.advance(item_id, new, actor, **data)
+        except RuntimeError:
+            return None
+
+    def fail(self, item_id: str, actor: str, reason: str) -> None:
+        """Move an in-flight item to its terminal failure state (no-op if it has none)."""
+        terminal = {"queued": None, "verifying": "rejected", "verified": None,
+                    "patching": "patch_failed"}.get(self.get(item_id).state)
+        if terminal:
+            self.try_advance(item_id, terminal, actor, reason=reason)
+
+    def recover(self) -> list[str]:
+        """After a crash, nothing is really in flight: fail items left mid-verify/patch."""
+        stuck = [r[0] for r in self.conn.execute(
+            "SELECT id FROM items WHERE state IN ('verifying', 'patching')")]
+        for item_id in stuck:
+            self.fail(item_id, "core", "interrupted (process restarted)")
+        return stuck
 
     def next_queued(self) -> str | None:
         row = self.conn.execute("SELECT id FROM items WHERE state='queued' ORDER BY created LIMIT 1").fetchone()
