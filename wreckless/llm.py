@@ -49,6 +49,7 @@ def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[
     client = OpenAI(base_url=ep.url, api_key="local", timeout=600, max_retries=1)
     by_name = {t.name: t for t in tools}
     limit = _context_window(client)
+    nudges = 2  # times a model that stops talking before the oracle is satisfied is sent back to work
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
     for step in range(max_steps):
         t0 = time.time()
@@ -65,7 +66,13 @@ def run_agent(ep: ModelEndpoint, role: str, system: str, task: str, tools: list[
         if msg.content:
             ui.think(role, msg.content)
         if not msg.tool_calls:
-            return AgentResult(msg.content or "", messages, is_done())
+            if is_done() or nudges == 0:
+                return AgentResult(msg.content or "", messages, is_done())
+            nudges -= 1  # it described the fix instead of making it: say so once or twice, then give up
+            messages.append({"role": "user", "content": "The task is not finished: the check that decides "
+                             "it has not passed. Don't explain; call a tool to make progress."})
+            ui.say(role, "stopped before the check passed → asking it to continue")
+            continue
         for call in msg.tool_calls:
             try:
                 args = json.loads(call.function.arguments or "{}")
