@@ -30,7 +30,7 @@ for p in logs:
     done = [e["item"] for e in map(json.loads, p.read_text().splitlines())
             if e.get("kind") == "transition" and e.get("to") == "notified"]
     if done:
-        print(p, done[-1]); break
+        print(f"{p}\t{done[-1]}"); break   # tab: the path may contain spaces
 EOF
 }
 
@@ -49,7 +49,7 @@ for spec in "RED:8000" "BLUE:8001" "VICTIM:8002"; do
 done
 GOOD_RUN="$(last_good_run)"
 if [[ -n "$GOOD_RUN" ]]; then ok "replay safety net: $GOOD_RUN"; else bad "no recorded notified item for replay — record one first: scripts/demo.sh scripted"; fi
-read -r GOOD_EVENTS GOOD_ITEM <<<"$GOOD_RUN"
+IFS=$'\t' read -r GOOD_EVENTS GOOD_ITEM <<<"$GOOD_RUN"
 if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_CHANNEL:-}" ]]; then ok "Slack bot token + channel set"
 elif [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then ok "Slack webhook set (no live card update)"
 else bad "Slack not configured — cards go to logs/slack_outbox.jsonl (the terminal says so)"; fi
@@ -65,8 +65,11 @@ beat "1 · AIRGAP ON (cloud-LLM routes dropped; loopback + Slack stay up)"
 if [[ "$(uname -s)" == Linux ]]; then
   echo "  will run: sudo scripts/airgap_lockdown.sh on"
   if ask "  run it?"; then
-    sudo scripts/airgap_lockdown.sh on
-    scripts/airgap_lockdown.sh verify || bad "airgap verify FAILED — do not claim airgap"
+    if sudo scripts/airgap_lockdown.sh on; then
+      scripts/airgap_lockdown.sh verify || bad "airgap verify FAILED — do not claim airgap"
+    else
+      bad "airgap 'on' FAILED (see above) — do not claim airgap"
+    fi
   else info "skipped (say so on stage)"; fi
 else
   info "not Linux ($(uname -s)): iptables airgap unavailable here — do not claim airgap on this host"

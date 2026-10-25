@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launch the 3-port swarm (see wreckless-gb10-plan.md). Biggest model first.
+# Launch the 3-port swarm (see docs/gb10-plan.md). Biggest model first. Models, ports, served
+# names, memory share and tool parsers come from scripts/models.tsv:
 #   8001 Blue   Qwen3-Coder-Next 80B-A3B   (fallback: Qwen2.5-Coder-32B-AWQ with BLUE_FALLBACK=1)
 #   8000 Purple+Red  Qwen3-Coder-30B-A3B
 #   8002 Victim Qwen2.5-Coder-7B
@@ -11,6 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VLLM=${VLLM:-.venv-vllm/bin/vllm}
+# TODO: pin by digest once pulled (VLLM_IMAGE=nvcr.io/nvidia/vllm@sha256:... works today)
 IMAGE=${VLLM_IMAGE:-nvcr.io/nvidia/vllm:26.09-py3}
 EXTRA=${VLLM_EXTRA:-}   # e.g. VLLM_EXTRA=--enforce-eager if CUDA graphs misbehave on sm_121
 mkdir -p logs
@@ -34,27 +36,41 @@ fi
 [[ $VLLM_RUNTIME == pip ]] && export PATH=$PWD/.venv-vllm/bin:$PATH
 
 if [[ ${1:-} == stop ]]; then
-  pkill -f "vllm serve" 2>/dev/null || true
-  for n in blue red victim; do D docker rm -f "wl-vllm-$n" >/dev/null 2>&1 || true; done
+  # only our servers: pidfiles from the pip runtime, our containers, our log followers
+  for n in blue red victim; do
+    if [[ -f logs/vllm_$n.pid ]]; then kill "$(cat "logs/vllm_$n.pid")" 2>/dev/null || true; rm -f "logs/vllm_$n.pid"; fi
+    D docker rm -f "wl-vllm-$n" >/dev/null 2>&1 || true
+    pkill -f "docker logs -f wl-vllm-$n\$" 2>/dev/null || true
+  done
   echo "stopped"; exit 0
 fi
 
-serve() {  # name port model util [extra...]
-  local name=$1 port=$2 model=$3 util=$4; shift 4
-  local args=(--served-model-name "$name" --host 127.0.0.1 --port "$port"
+# model <role>: "port names util parser dir" from scripts/models.tsv
+model() {
+  awk -v r="$1" '$1 == r {n = split($6, a, "/"); print $2, $3, $4, $5, a[n]; f = 1} END {exit !f}' scripts/models.tsv \
+    || { echo "no role $1 in scripts/models.tsv" >&2; exit 1; }
+}
+
+serve() {  # name role (row of scripts/models.tsv)
+  local name=$1 port names util parser model
+  read -r port names util parser model < <(model "$2")
+  # shellcheck disable=SC2206  # EXTRA is a flag list on purpose
+  local args=(--served-model-name ${names//,/ } --host 127.0.0.1 --port "$port"
               --gpu-memory-utilization "$util"
               --max-model-len 16384 --max-num-seqs 4 --kv-cache-dtype fp8
-              --enable-auto-tool-choice "$@" $EXTRA)
+              --enable-auto-tool-choice --tool-call-parser "$parser" $EXTRA)
   echo "[$(date +%T)] starting $name on :$port ($model, util=$util, $VLLM_RUNTIME)"
   if [[ $VLLM_RUNTIME == docker ]]; then
     D docker rm -f "wl-vllm-$name" >/dev/null 2>&1 || true
     D docker run -d --name "wl-vllm-$name" --gpus all --ipc=host --network host \
       -v "$PWD/models:/models:ro" "$IMAGE" vllm serve "/models/$model" "${args[@]}" >/dev/null
+    pkill -f "docker logs -f wl-vllm-$name\$" 2>/dev/null || true   # one follower per container
     (D docker logs -f "wl-vllm-$name" > "logs/vllm_$name.log" 2>&1 &)
     alive() { [[ $(D docker inspect -f '{{.State.Running}}' "wl-vllm-$name" 2>/dev/null) == true ]]; }
   else
     nohup "$VLLM" serve "models/$model" "${args[@]}" > "logs/vllm_$name.log" 2>&1 &
     local pid=$!
+    echo "$pid" > "logs/vllm_$name.pid"
     alive() { kill -0 "$pid" 2>/dev/null; }
   fi
   for _ in $(seq 1 240); do
@@ -67,14 +83,9 @@ serve() {  # name port model util [extra...]
 
 target=${1:-all}
 if [[ $target == all || $target == blue ]]; then
-  if [[ ${BLUE_FALLBACK:-0} == 1 ]]; then
-    serve blue 8001 Qwen2.5-Coder-32B-Instruct-AWQ 0.30 --tool-call-parser hermes
-  else
-    # 0.45 not 0.40: weights are 45 GiB on disk, 0.40 of ~120 GiB would leave ~3 GiB for KV
-    serve blue 8001 Qwen3-Coder-Next-AWQ-4bit 0.45 --tool-call-parser qwen3_coder
-  fi
+  if [[ ${BLUE_FALLBACK:-0} == 1 ]]; then serve blue blue-fallback; else serve blue blue; fi
 fi
-[[ $target == all || $target == red ]] && serve red 8000 Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit 0.20 --tool-call-parser qwen3_coder
-[[ $target == all || $target == victim ]] && serve victim 8002 Qwen2.5-Coder-7B-Instruct-AWQ 0.08 --tool-call-parser hermes
+if [[ $target == all || $target == red ]]; then serve red red; fi
+if [[ $target == all || $target == victim ]]; then serve victim victim; fi
 nvidia-smi --query-gpu=memory.used --format=csv 2>/dev/null || true
 free -g | head -2
