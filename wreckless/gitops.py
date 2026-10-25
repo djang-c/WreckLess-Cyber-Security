@@ -4,8 +4,14 @@ import subprocess
 from pathlib import Path
 
 
+# Repos live inside enclave run dirs that payloads touch: never let repo state run code on
+# the host (planted hooks, fsmonitor, or a config-defined filter/diff driver).
+SAFE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never",
+        "-c", "protocol.file.allow=always")
+
+
 def git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+    return subprocess.run(["git", *SAFE, *args], cwd=cwd, check=True, capture_output=True,
                           text=True).stdout.strip()
 
 
