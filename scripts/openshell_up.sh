@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
 # Bring up the OpenShell gateway (docker compute driver) and the WreckLess sandbox image.
 # Usage: scripts/openshell_up.sh            stop: pkill -f '^openshell-gateway$'
+#        scripts/openshell_up.sh prune      delete every WreckLess sandbox (left by killed runs);
+#                                           not while a run or the daemon is live
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
 mkdir -p logs ~/.config/openshell
 grep -q OPENSHELL_COMPUTE_DRIVER ~/.config/openshell/gateway.env 2>/dev/null \
   || echo "OPENSHELL_COMPUTE_DRIVER=docker" >> ~/.config/openshell/gateway.env
 
 # docker group may be missing from this login session if it was added after login
 if id -nG | grep -qw docker; then D() { "$@"; }; else D() { sg docker -c "$(printf '%q ' "$@")"; }; fi
+
+if [[ ${1:-} == prune ]]; then
+  names=$(openshell sandbox list --selector app=wreckless --names --page-size 10000)
+  [[ -z $names ]] && { echo "no WreckLess sandboxes"; exit 0; }
+  echo "deleting $(echo "$names" | wc -l) WreckLess sandboxes"
+  # SIGKILL the containers first: `sandbox delete` waits out docker's ~10 s graceful stop per
+  # sandbox, and hundreds of them at once stall dockerd. The deletes then only drop the records.
+  D bash -c 'docker ps -aq --filter label=openshell.ai/managed-by=openshell --filter name=openshell-default--wl- \
+    | xargs -r -n 50 docker rm -f' >/dev/null 2>&1 || true
+  echo "$names" | xargs -P 16 -n 1 openshell sandbox delete >/dev/null 2>&1 || true
+  echo "left: $(openshell sandbox list --selector app=wreckless --names --page-size 10000 | grep -c .)"
+  exit 0
+fi
 
 D docker image inspect wreckless-sandbox:py312 >/dev/null 2>&1 \
   || D docker build -q -t wreckless-sandbox:py312 sandbox/
