@@ -1,6 +1,7 @@
-"""Replica of langchain_experimental.pal_chain.base @ aebdb1a (CVE-2023-44467).
+"""Minimal replica of the vulnerable LangChain function
+(langchain_experimental.pal_chain.base @ aebdb1a, CVE-2023-44467).
 
-Validation logic is copied from upstream (MIT, LangChain). The denylist misses
+Validation logic is adapted from upstream (MIT, LangChain). The denylist misses
 ``__import__``, so generated "math" code can import os and run anything.
 """
 from __future__ import annotations

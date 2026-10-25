@@ -273,12 +273,12 @@ def patch_validated(item: str, branch: str, commit: str, source: str, _record: b
 
 
 def notified(item: str, channel: str, ts: float | None = None, _record: bool = True) -> None:
-    """Where the 'Draft PR Ready' card actually went (outbox means Slack was NOT reached)."""
+    """Where the final fix-branch card actually went (outbox means Slack was NOT reached)."""
     if _record:
         _emit("core", "notified", item=item, channel=channel)
     where = ("Slack" if channel.startswith("slack") else
              "local outbox logs/slack_outbox.jsonl (Slack not configured / unreachable)")
-    say("core", f"✅ {item} Draft PR Ready card → {where} [{channel}]", ts=ts, _record=False)
+    say("core", f"✅ {item} fix-branch card (local, pending review) → {where} [{channel}]", ts=ts, _record=False)
 
 
 def replay_tag(source: str, speed: float) -> None:

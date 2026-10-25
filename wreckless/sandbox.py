@@ -1,9 +1,10 @@
-"""Exploit execution enclave.
+"""Exploit execution enclave: a userland guard rail (OpenShell when installed), not a sandbox.
 
 Backends:
 - ``userland-guard`` (default here): scrubbed env, rlimits, timeout, and a Python audit
-  hook that blocks non-loopback sockets and writes outside the run directory. It is a
-  guard rail for Python payloads, not kernel isolation (this host disallows unprivileged
+  hook that blocks non-loopback sockets, writes outside the run directory, and (when
+  asked) reads of the held-out benchmark files. It is a guard rail for Python payloads,
+  not kernel isolation: ``os.system``/``subprocess`` children escape it (this host disallows unprivileged
   user namespaces, so bwrap/unshare are unavailable).
 - ``openshell`` (preferred when the gateway is up): each item gets an OpenShell sandbox
   container (image ``wreckless-sandbox:py312``, see sandbox/Dockerfile) with kernel-enforced
@@ -31,6 +32,8 @@ GUARD = textwrap.dedent('''
     _ORACLE = os.environ.get("WRECKLESS_ORACLE")
     _PROV = os.environ.pop("WRECKLESS_PROVENANCE", None)
     _VICTIM = os.environ.pop("WRECKLESS_VICTIM_ROOT", None)
+    _DENY = [os.path.realpath(d) for d in os.environ.get("WRECKLESS_DENY_READ", "").split(os.pathsep) if d]
+    _ALLOW = {os.path.realpath(a) for a in os.environ.get("WRECKLESS_ALLOW_READ", "").split(os.pathsep) if a}
     _WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
     _busy = []
 
@@ -80,6 +83,10 @@ GUARD = textwrap.dedent('''
     def _hook(event, args):
         if _busy:
             return
+        if event == "open" and _DENY and not isinstance(args[0], int):
+            p = os.path.realpath(os.fsdecode(args[0]))
+            if p not in _ALLOW and any(p == d or p.startswith(d + os.sep) for d in _DENY):
+                raise PermissionError(f"[enclave] read of held-out file blocked: {p}")
         if event == "open" and args[2] and (args[2] & _WRITE) and not isinstance(args[0], int):
             p = os.path.realpath(os.fsdecode(args[0]))
             if not (p.startswith(_ROOT) or p == "/dev/null"):
@@ -115,6 +122,7 @@ class OracleResult:
     output: str
     backend: str
     frames: list = field(default_factory=list)
+    returncode: int | None = None  # exploit process exit code (0 = it claims success)
 
     @property
     def verified(self) -> bool:
@@ -178,7 +186,7 @@ class Enclave:
         info = json.loads(raw) if raw else {}
         via = info.get("via_victim")
         return OracleResult(hit, self.impl.to_host(via) if via else None, r.output, r.backend,
-                            info.get("frames", []))
+                            info.get("frames", []), r.returncode)
 
     def close(self) -> None:
         self.impl.close()

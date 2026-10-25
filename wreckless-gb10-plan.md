@@ -42,7 +42,7 @@ Why this is the better story: it strengthens Business Value ("hunts overnight, f
 
 The always-on behaviour is the *system*; the demo's critical path is *one pre-verified item*. Keep them separate.
 
-- **Critical path = one VERIFIED CVE** (LangChain CVE-2024-21513), pre-confirmed, walked live: the exploit-as-test passes on the vulnerable commit, is blocked on Blue's patch, and the module's existing upstream tests still pass. Framing: **"exploit blocked + no regressions"** — never "the maintainer's test." Show Blue's diff beside the maintainer's fix `7b13292e`.
+- **Critical path = one VERIFIED CVE** (LangChain CVE-2024-21513), pre-confirmed, walked live: the exploit-as-test passes on the vulnerable commit, is blocked on Blue's patch, and the victim replica's functional tests (written by WreckLess, not upstream) still pass. Framing: **"exploit blocked + no regressions"** — never "the maintainer's test." Show Blue's diff beside the maintainer's fix `7b13292e`.
 - **Continuous Red = background liveness panel**, pre-seeded: e.g. "Red up 6 h · 14 candidates · 3 verified." Proves always-on + generality without betting the demo on live luck.
 - **Throttle background hunting during the hero beat.** On one bandwidth-bound GPU, a churning Red steals the 273 GB/s from Blue. Pause/rate-limit Red while walking the verified item; resume after.
 - **Never claim autonomous 0-day discovery as proven.** Autonomous novel-vuln discovery is an open research problem, and a 4-bit model under N=1 is a weak hunter — expect mostly false positives. The gate makes that safe (garbage gets rejected), but any unverified hunt output stays labelled PREDICTION and is shown as leads-to-verify, not findings.
@@ -126,8 +126,8 @@ Two parallel tracks meeting at two shared contracts, defined day one: the OpenAI
 **Person B — Orchestration & Defense (Blue + Demo)**
 
 - NemoClaw orchestrator: the candidate **queue**, the per-item **state lifecycle**, and the **verify gate** (runs Red's exploit-as-test in the sandbox, reads the oracle, promotes PREDICTION → VERIFIED). The `vulnerability_report.json` handoff.
-- Blue: AST patch generation; wrap Red's exploit as a pytest and re-run it on the patch + re-run the module's upstream tests → "exploit blocked + no regressions"; render Blue's diff beside the maintainer's fix `7b13292e`.
-- `airgap_lockdown.sh` (decision 4) + Slack Socket Mode bridge; card ends with a real "Draft PR Ready" link (draft PR on a fork, needs approval) + per-agent audit trail.
+- Blue: AST patch generation; wrap Red's exploit as a pytest and re-run it on the patch + re-run the victim replica's WreckLess-written functional tests → "exploit blocked + no regressions"; render Blue's diff beside the maintainer's fix `7b13292e`.
+- `airgap_lockdown.sh` (decision 4) + Slack Socket Mode bridge; card ends with "Fix branch ready (local, pending review)"; only say "Draft PR" once a real PR URL exists (draft PR on a fork, needs approval) + per-agent audit trail.
 - Terminal mascots/ANSI UI incl. the GB10 memory panel (3 models resident, ~110B in 128 GB) + live tokens/sec per port; the 4-minute `--demo-mode` (N=1) script with per-state timeouts, one retry, honest-failure, and a pre-recorded fallback replayed from `events.jsonl`.
 
 Balanced: A carries the front-loaded infra risk; B carries the two heaviest logic pieces (the queue/gate/state machine + the Blue hero proof) plus the demo polish. Both halves develop on MacBooks against the shared endpoint; only Person A needs real GB10 silicon early.
@@ -210,8 +210,8 @@ The ~4-minute run — **one pre-verified item in the critical path; continuous R
 1. Airgap goes up — a live `curl api.openai.com` is REJECTED while the swarm keeps running (Local-First, visible).
 2. Purple retrieves the CVE advisory from the local intel cache (offline).
 3. The item enters the queue as a PREDICTION; the verify gate runs the exploit-as-test in the OpenShell sandbox — it fires on the vulnerable commit. Terminal turns red, Slack fires the intrusion trace. Now VERIFIED.
-4. Blue generates the AST patch; the exploit-as-test is re-run and is now **blocked**, and the module's upstream tests still **pass** — "exploit blocked + no regressions." Blue's diff is shown beside the maintainer's fix `7b13292e`.
-5. Slack card flips to "Draft PR Ready" with a real link (draft PR on a fork, pending approval).
+4. Blue generates the AST patch; the exploit-as-test is re-run and is now **blocked**, and the victim replica's WreckLess-written functional tests still **pass** — "exploit blocked + no regressions." Blue's diff is shown beside the maintainer's fix `7b13292e`.
+5. Slack card flips to "Fix branch ready (local, pending review)"; "Draft PR" only with a real PR URL (draft PR on a fork, pending approval).
 6. Background panel shows the always-on proof: "Red up 6 h · 14 candidates · 3 verified," and a 2nd CVE runs through the same pipeline untouched (generality).
 
 **Safety nets:** every state has a timeout and a degrade path; if the patch fails under `--demo-mode` it retries once, then shows the failure honestly; a pre-recorded run replays from `events.jsonl` with the same UI if the box misbehaves.

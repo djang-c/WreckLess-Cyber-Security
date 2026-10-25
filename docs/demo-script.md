@@ -15,7 +15,7 @@ Honesty rule for the presenter: say only what the screen shows. If the terminal 
 | 2 Purple | 0:35–1:05 | 30 s | Fedora mascot, advisory, item queued as `PREDICTION` |
 | 3 Red + gate | 1:05–2:05 | 60 s | TopHat mascot, gate re-runs the exploit, red **INTRUSION** flash |
 | 4 Blue | 2:05–3:20 | 75 s | HardHat mascot, +green/−red diff, 3-check scoreboard, green **PATCH VALIDATED** |
-| 5 Slack | 3:20–4:00 | 40 s | "Draft PR Ready" card in Slack (or the outbox line, if Slack is down) |
+| 5 Slack | 3:20–4:00 | 40 s | "Fix branch ready (local, pending review)" card in Slack (or the outbox line, if Slack is down) |
 
 Live-LLM wall time on the GB10 per beat: `UNVERIFIED` — measure in rehearsal and fill in.
 Scripted (`--no-llm`) pipeline time measured on a Mac laptop: ~1.1 s total (the beats then run

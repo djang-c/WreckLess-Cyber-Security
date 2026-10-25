@@ -166,14 +166,20 @@ class Swarm:
             slack.send("blue", f"Patch failed validation: {item_id}", "Needs a human.")
             return "patch_failed"
 
+        src_label = blue.CACHED_LABEL if patch_source == "fallback" else f"patch: {patch_source}"
         fix_commit = commit_all(blue_wt, f"fix({item_id}): {item.title[:60]}\n\n"
-                                         f"Patch source: {patch_source}. {v.summary()}")
+                                         f"Patch source: {src_label}. {v.summary()}")
         self.queue.advance(item_id, "patched", "blue", branch=branch, commit=fix_commit, source=patch_source)
         ui.patch_validated(item_id, branch, fix_commit, patch_source)
         elapsed = time.time() - t0
         slack.bind(branch=branch, commit=fix_commit, patch_source=patch_source)
-        via = slack.send("blue", f"✅ Draft PR Ready: {item_id}",
-                         f"Branch `{branch}` @ `{fix_commit[:10]}` · patch: {patch_source}\n"
+        if patch_source == "fallback":
+            ui.say("blue", f"\033[1;43;30m {blue.CACHED_LABEL} \033[0m")
+        title = "Fix branch ready (local, pending review)"
+        if patch_source == "fallback":
+            title += f" · ⚠️ {blue.CACHED_LABEL}"
+        via = slack.send("blue", f"✅ {title}: {item_id}",
+                         f"Branch `{branch}` @ `{fix_commit[:10]}` · {src_label}\n"
                          f"{v.summary()} · {elapsed:.0f}s\n```{diff[:1500]}```")
         self.queue.advance(item_id, "notified", "core", channel=via, elapsed_s=round(elapsed, 1))
         ui.notified(item_id, via)
