@@ -44,7 +44,7 @@ def verdict(box_, body):
 
 def test_real_eval_injection_still_verifies(box):
     v = verdict(box, "vpkg.calc(f\"__import__('pathlib').Path({ORACLE!r}).write_text({NONCE!r})\")\n")
-    assert v.verified, v.result.output
+    assert v.passed and v.result.via_func == "calc", v.result.output   # no reference exploit: REACHABLE
 
 
 def test_payload_callback_called_by_victim_is_not_victim_provenance(box):
@@ -70,7 +70,7 @@ def test_callback_compiled_with_exec_is_not_victim_provenance(box):
 def test_planted_module_imported_by_victim_is_not_victim_code(box):
     v = verdict(box, """
         d = os.path.join(os.environ['TMPDIR'], 'planted')
-        os.makedirs(d)
+        os.makedirs(d, exist_ok=True)   # the gate runs it on several copies
         open(os.path.join(d, 'evil.py'), 'w').write(
             f"open({ORACLE!r},'w').write({NONCE!r})\\n")
         sys.path.insert(0, d)

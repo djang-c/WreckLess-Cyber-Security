@@ -175,21 +175,20 @@ def test_guard_state_is_not_importable(tmp_path):
 def test_vulnerable_and_control_trees_look_alike(tmp_path):
     victim, enclave = _item(tmp_path)
     probe = tmp_path / "paths.py"
-    probe.write_text("import os, sys\nopen(os.path.join(os.environ['WRECKLESS_SANDBOX_ROOT'], 'seen.txt'), 'a')"
+    probe.write_text("import os, sys\nopen(os.path.join(os.environ['TMPDIR'], 'seen.txt'), 'a')"
                      ".write(os.path.realpath(sys.argv[1]) + '\\n')\n"
                      + (BENCHMARKS / "CVE-2024-21513" / "known_good" / "repro_exploit.py").read_text())
     ref = BENCHMARKS / "CVE-2024-21513" / "known_good"
     gate.verify(probe, victim, enclave, reference_patch=ref / "fix.patch", reference_exploit=ref / "repro_exploit.py")
-    seen = (enclave.root / "seen.txt").read_text().split()
+    seen = (enclave.root / "tmp" / "seen.txt").read_text().split()   # payload writes land in tmp/
     assert len(seen) == 3 and len(set(seen)) == 3
     assert len({Path(p).name for p in seen}) == 1 and len({len(Path(p).parts) for p in seen}) == 1
     below = [str(Path(p).relative_to(enclave.root.resolve())) for p in seen]
     assert not any("control" in p or "ref" in p for p in below), below
 
 
-@pytest.mark.xfail(strict=True, reason="KNOWN LIMIT: in-process provenance can be forged by code that "
-                   "digs the guard's state out of gc; needs out-of-process recording (OpenShell/kernel)")
-def test_known_limit_gc_dig_forgery_is_rejected(tmp_path):
+def test_gc_dig_forgery_is_rejected(tmp_path):
+    """Was a known limit: gc introspection is now a guard violation, which rejects the run."""
     v = _verify(tmp_path, BYPASS / "a8_gc_dig_forge.py", "CVE-2024-21513")
     assert not v.passed, v.reason
 
