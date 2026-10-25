@@ -77,9 +77,61 @@ def test_panel_renders_up_and_down(capsys, monkeypatch):
     ui.gb10_panel(120.0, 60.0, [
         {"role": "blue", "port": 8001, "up": True, "mem_util": 0.45, "tok_s": 31.2,
          "kv_usage": 0.12, "running": 1, "waiting": 0},
-        {"role": "victim", "port": 8002, "up": False, "error": "URLError"}], _record=False)
+        {"role": "victim", "port": 8002, "up": False, "error": "URLError"}])
     out = capsys.readouterr().out
     assert "54 GB" in out and "31.2 tok/s" in out and "DOWN URLError" in out
     assert "1/2 up" in out
     widths = {len(line) for line in out.splitlines()[:-1]}
     assert len(widths) == 1                         # borders line up
+
+
+LEGACY = """vllm:num_requests_running{model_name="old"} 1.0
+vllm:gpu_cache_usage_perc{model_name="old"} 0.5
+vllm:generation_tokens{model_name="old"} 70.0
+vllm:prompt_tokens{model_name="old"} 30.0
+vllm:cache_config_info{gpu_memory_utilization="not-a-number"} 1.0
+"""
+
+
+def test_legacy_metric_names_and_bad_mem_util(monkeypatch):
+    import io
+    monkeypatch.setattr(metrics.urllib.request, "urlopen",
+                        lambda url, timeout=None: io.BytesIO(LEGACY.encode()))
+    st = metrics.port_stats("old", "http://h:9/v1")
+    assert st.up and st.model == "old" and st.port == 9
+    assert (st.gen_tokens, st.prompt_tokens, st.kv_usage) == (70, 30, 0.5)
+    assert st.mem_util is None                      # a garbage label is ignored, not raised
+
+
+def test_counter_reset_gives_no_rate_then_recovers(monkeypatch):
+    body = {"gen": 1000.0}
+    monkeypatch.setattr(metrics, "port_stats", lambda role, url: metrics.PortStats(
+        role, 1, up=True, gen_tokens=body["gen"]))
+    monkeypatch.setattr(metrics, "meminfo", lambda: (1.0, 0.5))
+    times = iter([0.0, 10.0, 20.0])
+    mon = metrics.Monitor(endpoints={"blue": "u"}, clock=lambda: next(times))
+    mon.sample()
+    body["gen"] = 40.0                              # server restarted, counter went back
+    assert mon.sample().ports[0].tok_s is None
+    body["gen"] = 240.0
+    assert mon.sample().ports[0].tok_s == pytest.approx(20.0)
+
+
+def test_meminfo_missing_is_not_raised(tmp_path):
+    assert metrics.meminfo(tmp_path / "nope") == (0.0, 0.0)
+
+
+def test_ports_are_probed_concurrently(monkeypatch):
+    import time as _t
+    monkeypatch.setattr(metrics, "meminfo", lambda: (1.0, 0.5))
+
+    def slow(role, url):
+        _t.sleep(0.3)
+        return metrics.PortStats(role, 1, error="TimeoutError")
+
+    monkeypatch.setattr(metrics, "port_stats", slow)
+    mon = metrics.Monitor(endpoints={"a": "1", "b": "2", "c": "3"})
+    t0 = _t.monotonic()
+    snap = mon.sample()
+    assert _t.monotonic() - t0 < 0.8
+    assert [p.role for p in snap.ports] == ["a", "b", "c"]

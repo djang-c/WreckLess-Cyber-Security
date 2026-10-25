@@ -1,14 +1,13 @@
 """wreckless run | daemon | status | replay | metrics | intel | view | mascots"""
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-from wreckless import ui
-from wreckless import targets
+from wreckless import sandbox, targets, ui
 from wreckless.config import RUNS, Settings
 from wreckless.events import replay
-from wreckless.sandbox import openshell_available
 from wreckless.swarm import Swarm
 
 
@@ -18,6 +17,24 @@ def _settings(a) -> Settings:
     if a.demo_mode:
         s.max_agent_steps = 8
     return s
+
+
+def _backend() -> str:
+    """The backend Enclave will pick, without building one (same rule as sandbox.Enclave)."""
+    want = os.environ.get("WRECKLESS_SANDBOX", "auto")
+    if want == "openshell" or (want == "auto" and sandbox.openshell_available()):
+        return "openshell"
+    return "userland-guard"
+
+
+def _positive(text: str) -> float:
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not 0 < v < float("inf"):  # also rejects nan
+        raise argparse.ArgumentTypeError(f"must be > 0 seconds, got {text!r}")
+    return v
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -53,7 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--item")
 
     m = sub.add_parser("metrics", help="GB10 memory + per-port tokens/sec from vLLM /metrics")
-    m.add_argument("--watch", type=float, metavar="SECONDS", help="refresh every N seconds")
+    m.add_argument("--watch", type=_positive, metavar="SECONDS",
+                   help="refresh every N seconds (N > 0); Ctrl-C to stop")
     m.add_argument("--json", action="store_true", help="one JSON line per sample (for dashboards)")
 
     it = sub.add_parser("intel", help="Purple's advisory DB: sync feeds, list, search, show")
@@ -93,8 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     swarm = Swarm(_settings(a), a.home)
     if a.cmd == "run":
         ui.banner(f"WreckLess · {a.cve} · {a.mode} mode{' · demo' if a.demo_mode else ''}")
-        backend = "openshell" if openshell_available() else "userland-guard"
-        ui.say("core", f"home {swarm.home} · target: {swarm.target.name} · enclave: {backend}")
+        ui.say("core", f"home {swarm.home} · target: {swarm.target.name} · enclave: {_backend()}")
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
     swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener)
     return 0
@@ -125,32 +142,41 @@ def _intel(action: str, query: str | None, which: tuple, target: str) -> int:
     return 0
 
 
-def _metrics(watch: float | None, as_json: bool) -> int:
+def _metrics(watch: float | None, as_json: bool, mon=None, sleep=None) -> int:
+    """One sample (exit 0 if any port is up, else 1), or every ``watch`` seconds until Ctrl-C (130)."""
     import dataclasses
     import time
     from wreckless.metrics import Monitor
-    mon = Monitor()
-    if watch and not as_json:
-        mon.sample()          # prime the counters so the first panel already has tokens/sec
-        time.sleep(min(watch, 2))
-    while True:
-        snap = mon.sample()
-        ports = [dataclasses.asdict(p) for p in snap.ports]
-        if as_json:
-            print(json.dumps({"t": snap.t, "mem_total_gb": snap.mem_total_gb,
-                              "mem_used_gb": snap.mem_used_gb, "ports": ports}), flush=True)
-        else:
-            if watch and ui.color_enabled():
-                print("\033[H\033[2J", end="")
-            ui.gb10_panel(snap.mem_total_gb, snap.mem_used_gb, ports, _record=False)
-        if not watch:
-            return 0 if any(p.up for p in snap.ports) else 1
-        time.sleep(watch)
+    mon = mon or Monitor()
+    sleep = sleep or time.sleep
+    try:
+        if watch and not as_json:
+            mon.sample()          # prime the counters so the first panel already has tokens/sec
+            sleep(min(watch, 2))
+        while True:
+            snap = mon.sample()
+            ports = [dataclasses.asdict(p) for p in snap.ports]
+            if as_json:
+                print(json.dumps({"t": snap.t, "mem_total_gb": snap.mem_total_gb,
+                                  "mem_used_gb": snap.mem_used_gb, "ports": ports}), flush=True)
+            else:
+                if watch and ui.color_enabled():
+                    print("\033[H\033[2J", end="")
+                ui.gb10_panel(snap.mem_total_gb, snap.mem_used_gb, ports)
+            if not watch:
+                return 0 if any(p.up for p in snap.ports) else 1
+            sleep(watch)
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        return 130
 
 
 def _status(home: Path) -> int:
     from wreckless.candidates import CandidateQueue
     from wreckless.events import EventLog
+    if not (home / "queue.db").is_file():  # don't conjure an empty home out of a typo
+        print(f"wreckless status: no queue at {home / 'queue.db'} (wrong --home?)", file=sys.stderr)
+        return 2
     q = CandidateQueue(home / "queue.db", EventLog(home / "events.jsonl"))
     print(json.dumps(q.stats(), indent=2))
     for it in q.all()[-20:]:

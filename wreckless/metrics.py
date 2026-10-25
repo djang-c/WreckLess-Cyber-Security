@@ -3,11 +3,12 @@
 nvidia-smi reports memory as [N/A] on the GB10 (unified memory), so the box total comes from
 /proc/meminfo and each port's share from the `gpu_memory_utilization` vLLM reports in
 `cache_config_info`. Tokens/sec is the delta of the generation-token counter between two samples.
-Stdlib only; a down port is reported as down, never raised.
+Stdlib only; a down port is reported as down, never raised (nor is a missing /proc/meminfo).
 """
 import re
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -90,8 +91,10 @@ def port_stats(role: str, base_url: str, timeout: float = 2.0) -> PortStats:
     st.gen_tokens = _sum(m, GEN_TOKENS) or 0
     st.prompt_tokens = _sum(m, PROMPT_TOKENS) or 0
     for labels, _ in m.get("vllm:cache_config_info", []):
-        if "gpu_memory_utilization" in labels:
+        try:
             st.mem_util = float(labels["gpu_memory_utilization"])
+        except (KeyError, ValueError):
+            pass
     for name in RUNNING + GEN_TOKENS:
         for labels, _ in m.get(name, []):
             st.model = st.model or labels.get("model_name")
@@ -99,11 +102,19 @@ def port_stats(role: str, base_url: str, timeout: float = 2.0) -> PortStats:
 
 
 def meminfo(path: Path = Path("/proc/meminfo")) -> tuple[float, float]:
-    """(total_gb, used_gb) of the unified pool: used = MemTotal - MemAvailable."""
+    """(total_gb, used_gb) of the unified pool: used = MemTotal - MemAvailable.
+    (0, 0) when /proc/meminfo is missing or unreadable (non-Linux, sandboxed /proc)."""
     kb = {}
-    for line in path.read_text().splitlines():
+    try:
+        text = path.read_text()
+    except OSError:
+        return 0.0, 0.0
+    for line in text.splitlines():
         k, _, rest = line.partition(":")
-        kb[k] = int(rest.split()[0]) if rest.split() else 0
+        try:
+            kb[k] = int(rest.split()[0]) if rest.split() else 0
+        except ValueError:
+            continue
     total = kb.get("MemTotal", 0) / 2**20
     return total, total - kb.get("MemAvailable", 0) / 2**20
 
@@ -124,9 +135,13 @@ class Monitor:
         now = self.clock()
         total, used = meminfo()
         snap = Snapshot(now, total, used)
-        for role, url in self.endpoints.items():
-            st = port_stats(role, url)
+        roles = list(self.endpoints)
+        # probed concurrently: three down ports cost one timeout, not three
+        with ThreadPoolExecutor(max_workers=max(1, len(roles))) as pool:
+            stats = list(pool.map(lambda r: port_stats(r, self.endpoints[r]), roles))
+        for role, st in zip(roles, stats):
             prev = self._prev.get(role)
+            # a counter that went backwards means the server restarted: no rate this sample
             if st.up and prev and now > prev[0] and st.gen_tokens >= prev[1]:
                 st.tok_s = (st.gen_tokens - prev[1]) / (now - prev[0])
             if st.up:
