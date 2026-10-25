@@ -184,6 +184,7 @@ uv venv .venv && uv pip install -p .venv -e .
 .venv/bin/python -m wreckless run --no-llm
 
 # 3. Full swarm on the GB10
+scripts/openshell_up.sh               # sandbox gateway + image (needs docker group)
 scripts/download_models.sh            # ~90 GB of weights into ./models
 scripts/serve_models.sh               # 3 vLLM servers, biggest first
 .venv/bin/python -m wreckless run --demo-mode
@@ -254,13 +255,14 @@ runs/CVE-2024-21513-<timestamp>/
 | `benchmarks/CVE-*/` | Advisory, held-out regression test, reference exploit and patch |
 | `scripts/` | Model download, vLLM serving, airgap lockdown |
 | `wreckless-gb10-plan.md` | Deployment plan and memory math |
+| `docs/knowledge-and-intel.md` | Intel feeds, RAG per role, fine-tuning plan |
 
 ---
 
 ## ⚠️ Honest limitations
 
-- **Sandbox:** the code is wired for OpenShell, but it isn't installed on this box yet. Until it is, exploits run behind a Python-level guard (blocks writes outside the run directory and non-loopback network) with scrubbed environment, resource limits, and a timeout. This host blocks the unprivileged user namespaces that `bwrap` needs, so the fallback is **not** kernel isolation.
-- **One CVE so far.** The pipeline is generic (`benchmarks/<CVE>/`), but only CVE-2024-21513 is packaged.
+- **Sandbox:** exploits run in **OpenShell** sandboxes (kernel-enforced deny-all egress, read-only root; a test proves this holds even with our Python guard disabled). Without a running gateway, WreckLess falls back to a Python-level guard, which is **not** kernel isolation. `--agentic` mode needs an OpenShell policy that allows the sandbox to reach the victim LLM; until then it only works on the fallback guard.
+- **Two CVEs so far** (CVE-2024-21513, CVE-2023-44467). The pipeline is generic (`benchmarks/<CVE>/`).
 - **`--demo-mode` fallbacks are labelled.** If the LLM misses and the cached exploit or patch is used, the report says `"source": "fallback"`.
 
 ---

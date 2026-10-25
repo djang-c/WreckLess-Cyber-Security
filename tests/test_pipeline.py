@@ -8,7 +8,7 @@ from wreckless.candidates import CandidateQueue
 from wreckless.config import BENCHMARKS, TARGETS, Settings
 from wreckless.events import EventLog, replay
 from wreckless.gitops import git, init_victim
-from wreckless.sandbox import Enclave
+from wreckless.sandbox import Enclave, openshell_available
 from wreckless.swarm import Swarm
 
 CVES = ["CVE-2024-21513", "CVE-2023-44467"]
@@ -25,7 +25,9 @@ def no_slack(monkeypatch):
 def victim(tmp_path):
     src = tmp_path / "victim"
     init_victim(TARGETS / "victim_app", src)
-    return src, Enclave(tmp_path, sys.executable)
+    enclave = Enclave(tmp_path, sys.executable)
+    yield src, enclave
+    enclave.close()
 
 
 @pytest.mark.parametrize("cve", CVES)
@@ -85,7 +87,9 @@ def test_hardening_probes_beat_upstream_style_fix(victim):
     ("import socket; socket.create_connection(('1.1.1.1', 443), timeout=2)", "egress blocked"),
 ])
 def test_enclave_guard_blocks(tmp_path, code, needle):
-    r = Enclave(tmp_path, sys.executable).run([sys.executable, "-c", code])
+    enclave = Enclave(tmp_path, sys.executable)
+    r = enclave.run([sys.executable, "-c", code])
+    enclave.close()
     assert r.returncode != 0 and needle in r.output
 
 
@@ -103,3 +107,17 @@ def test_replay_renders_recorded_run(tmp_path, capsys):
     replay(tmp_path / "events.jsonl", speed=1000)
     out = capsys.readouterr().out
     assert "EXPLOIT VERIFIED" in out and "done in" in out
+
+
+@pytest.mark.skipif(not openshell_available(), reason="OpenShell gateway not running")
+def test_openshell_blocks_even_with_guard_disabled(tmp_path):
+    """`python3 -I` skips our sitecustomize guard; the kernel-level sandbox must still hold."""
+    enclave = Enclave(tmp_path, sys.executable, backend="openshell")
+    code = ("import socket, sys\n"
+            "try:\n    socket.create_connection(('1.1.1.1', 443), timeout=5); print('EGRESS_OPEN')\n"
+            "except OSError as e:\n    print('EGRESS_BLOCKED', e)\n"
+            "try:\n    open('/usr/pwn', 'w'); print('FS_OPEN')\n"
+            "except OSError as e:\n    print('FS_BLOCKED', e)\n")
+    r = enclave.run([sys.executable, "-I", "-c", code])
+    enclave.close()
+    assert "EGRESS_BLOCKED" in r.output and "FS_BLOCKED" in r.output, r.output

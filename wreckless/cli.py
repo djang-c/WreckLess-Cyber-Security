@@ -7,7 +7,7 @@ from pathlib import Path
 from wreckless import ui
 from wreckless.config import RUNS, Settings
 from wreckless.events import replay
-from wreckless.sandbox import Enclave
+from wreckless.sandbox import openshell_available
 from wreckless.swarm import Swarm
 
 
@@ -57,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     swarm = Swarm(_settings(a), a.home)
     if a.cmd == "run":
         ui.banner(f"WreckLess · {a.cve} · {a.mode} mode{' · demo' if a.demo_mode else ''}")
-        ui.say("core", f"home {swarm.home} · enclave: {Enclave(swarm.home, sys.executable).backend}")
+        backend = "openshell" if openshell_available() else "userland-guard"
+        ui.say("core", f"home {swarm.home} · enclave: {backend}")
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
     swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt)
     return 0

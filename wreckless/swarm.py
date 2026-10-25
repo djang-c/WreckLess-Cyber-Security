@@ -55,7 +55,11 @@ class Swarm:
             d.mkdir(parents=True, exist_ok=True)
             wt = d / "victim"
             init_victim(TARGETS / "victim_app", wt)
-            prop = red.hunt(wt, Enclave(d, sys.executable), d, self.s)
+            enclave = Enclave(d, sys.executable)
+            try:
+                prop = red.hunt(wt, enclave, d, self.s)
+            finally:
+                enclave.close()
             if prop:
                 item_id = self.queue.enqueue("red-hunt", prop.title, payload={
                     "hunt_dir": str(d), "script": str(prop.script), "file": prop.file,
@@ -68,10 +72,16 @@ class Swarm:
     # ---------- the per-item lifecycle ----------
     def process(self, item_id: str) -> str:
         self.events.item.id = item_id
-        item = self.queue.get(item_id)
         d = self.home / "items" / item_id.replace("#", "-")
         d.mkdir(parents=True, exist_ok=True)
         enclave = Enclave(d, sys.executable)
+        try:
+            return self._process(item_id, d, enclave)
+        finally:
+            enclave.close()
+
+    def _process(self, item_id: str, d: Path, enclave: Enclave) -> str:
+        item = self.queue.get(item_id)
         src = d / "victim-src"
         commit = init_victim(TARGETS / "victim_app", src)
         t0 = time.time()
