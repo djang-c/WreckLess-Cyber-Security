@@ -50,6 +50,11 @@ GUARD = textwrap.dedent('''
         fsenc = sys.getfilesystemencoding()
         RD, WR = posix.O_RDONLY, posix.O_WRONLY | posix.O_RDWR | posix.O_CREAT | posix.O_APPEND | posix.O_TRUNC
         PERM, RTE = PermissionError, RuntimeError
+        try:  # macOS has no /proc: a dir_fd's path comes from fcntl(F_GETPATH)
+            from fcntl import fcntl as fcntl_, F_GETPATH
+            GP_BUF = b"\\0" * 1024
+        except ImportError:
+            F_GETPATH = None
 
         def realpath(p):
             # non-strict realpath from C primitives (posixpath is patchable Python)
@@ -149,9 +154,14 @@ GUARD = textwrap.dedent('''
         def inside(p, dirs):
             return any(p == d[:-1] or p.startswith(d) for d in dirs)
 
+        def fd_path(fd):
+            if F_GETPATH is None:
+                return readlink("/proc/self/fd/%d" % fd)
+            return fcntl_(fd, F_GETPATH, GP_BUF).split(b"\\0", 1)[0].decode(fsenc)
+
         def resolve(p, dir_fd=-1, follow=True):
             if not p.startswith("/") and dir_fd not in (None, -1):
-                p = readlink("/proc/self/fd/%d" % dir_fd) + "/" + p
+                p = fd_path(dir_fd) + "/" + p
             if follow:
                 return realpath(p)
             head, _, base = p.rstrip("/").rpartition("/")

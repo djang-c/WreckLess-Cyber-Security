@@ -1,5 +1,6 @@
 """Regression: guard and provenance bypasses found in review, each one a payload that used to
 get VERIFIED or write outside the sandbox. All run on the userland guard (the weaker backend)."""
+import os
 import subprocess
 import sys
 import textwrap
@@ -173,7 +174,7 @@ def test_traceback_into_the_hook_is_a_violation(box):
     ("import ctypes; ctypes.string_at(id(1), 8)", "ctypes blocked"),
     ("import ctypes; ctypes.pythonapi.Py_IncRef", "ctypes blocked"),
     ("class P:\n    n = 0\n    def __fspath__(self):\n        P.n += 1\n        return '/etc/x' if P.n == 1 else 'tmp/ok'\n"
-     "open(P(), 'w')", "blocked: /etc/x"),  # judged on the path the syscall used, not a second ask
+     "open(P(), 'w')", "blocked: " + os.path.realpath("/etc") + "/x"),  # /private/etc on macOS  # judged on the path the syscall used, not a second ask
 ])
 def test_guard_blocks(tmp_path, code, needle):
     root = tmp_path / "item-1"
