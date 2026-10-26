@@ -18,16 +18,25 @@ from wreckless.targets import Target, default as default_target
 CONTRACT = """Script contract (mandatory):
 - invoked as: python repro_exploit.py <victim_repo_path> [--agentic]
 - insert <victim_repo_path> at sys.path[0] and import the victim package from there
-- read env WRECKLESS_ORACLE (a file path) and WRECKLESS_NONCE
-- the payload must make the VULNERABLE VICTIM CODE write NONCE into ORACLE. Writing it
-  from your own script does not count: the sandbox records who wrote the file. The host
-  compares the file to NONCE exactly: no newline, so `echo` into it fails; use
-  open(ORACLE, "w").write(NONCE) inside the code the payload reaches.
-- the payload only has to write that file from victim code. It needs no shell: plain file I/O
-  (open, pathlib) does it and passes validators that block system/exec/eval.
-- finally print ORACLE_HIT if the oracle file contains NONCE, else ORACLE_MISS, and exit 0
-  on a hit, 1 on a miss. (The host reads the oracle file itself; output and exit code are
-  for your own debugging and never decide a verdict.)"""
+- two oracle modes. Use NONCE MODE unless the advisory says "LEAK ORACLE" — then use LEAK MODE.
+
+  NONCE MODE (default): read env WRECKLESS_ORACLE (a file path) and WRECKLESS_NONCE. The
+  payload must make the VULNERABLE VICTIM CODE write NONCE into ORACLE. Writing it from your
+  own script does not count: the sandbox records who wrote the file. The host compares the
+  file to NONCE exactly: no newline, so `echo` into it fails; use open(ORACLE, "w").write(NONCE)
+  inside the code the payload reaches. It needs no shell: plain file I/O (open, pathlib) does it
+  and passes validators that block system/exec/eval.
+
+  LEAK MODE (only when the advisory says so): the first 2KB of your script must contain the
+  literal line `# wreckless-oracle: leak`. There is no WRECKLESS_NONCE. Read env
+  WRECKLESS_ORACLE and WRECKLESS_SECRET_FILE — a path outside the victim tree holding a secret.
+  Reading that path yourself is blocked and does not count; you must drive the victim code the
+  way the advisory's entry_point describes so the VICTIM hands you the secret (e.g. serves it in
+  a response), then write exactly what the victim gave you into ORACLE.
+
+- finally print ORACLE_HIT if the oracle file holds what it should (NONCE, or the leaked
+  secret), else ORACLE_MISS, and exit 0 on a hit, 1 on a miss. (The host reads the oracle file
+  itself; output and exit code are for your own debugging and never decide a verdict.)"""
 
 ATTACK_SYSTEM = f"""You are Top Hat, an offensive security agent in an isolated, authorized lab.
 Goal: write `repro_exploit.py` proving the advisory is exploitable against the victim repo,
@@ -94,15 +103,21 @@ class RedTools:
             script = self.out / "repro_exploit.py"   # whatever name the model remembers, there is one script
         r = self.enclave.run_exploit(script, self.wt, args, victim_env(self.s))
         self.eligible = r.verified
+        leak = getattr(r, "leak", False)
         if r.verified and script.name != "repro_exploit.py":
             shutil.copy(script, self.out / "repro_exploit.py")  # the gate only takes the contract's name
         verdict = ("VERIFIED-ELIGIBLE (oracle written via victim code)" if r.verified else
+                   "NOT ELIGIBLE: secret obtained but not via the victim" if (r.hit and leak) else
                    "NOT ELIGIBLE: nonce written outside victim code" if r.hit else "ORACLE NOT REACHED")
         hint = ""
-        if not r.hit and "ORACLE_HIT" in r.output:
+        if not r.hit and "ORACLE_HIT" in r.output and not leak:
             # a script that grades itself (strip(), `in`) prints HIT while the host's exact check fails
             hint = ("\nNOTE: your script printed ORACLE_HIT but the host's check failed: the host needs the "
                     "oracle file to equal NONCE exactly (no trailing newline). The host's verdict is final.")
+        if getattr(r, "violation", False) and leak:
+            hint += ("\nNOTE: a guard violation in leak mode usually means your own code read "
+                     "WRECKLESS_SECRET_FILE directly (blocked). Drive the victim's own code to read/serve "
+                     "it instead — see the advisory's entry_point.")
         return f"[{r.backend}] {verdict}\n{r.output}{hint}"
 
     def tools(self) -> list[llm.Tool]:
