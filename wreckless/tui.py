@@ -7,11 +7,13 @@ log looks exactly like the plain terminal UI.
 
 Tabs: Live (flock, log, item, scoreboard, GB10), Gate (every verdict with its runs), Queue
 (every candidate), Models (switch a role to a loaded model, or swap a model onto its port).
-Keys: r scripted run · d demo-mode run (LLM) · c CVE · t target · s Slack on/off · p replay
-last run · 1-4 tabs · q quit. Slack starts OFF: a launched run posts nothing unless you press s.
+Keys: r investigate (local AI) · s self-test (known-good exploit + patch: checks the pipeline) ·
+c advisory · t target · a Slack alerts on/off · p replay last finding · m settings · 1-4 tabs · q quit.
+Slack alerts start OFF: an investigation started here posts nothing unless you press a.
 """
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -125,14 +127,15 @@ STEPS = [("find", "Find", "Scout"), ("attack", "Attack", "Ralph"), ("prove", "Pr
 STEP_AT = {"idle": -1, "find": 0, "attack": 1, "prove": 2, "fix": 3, "approve": 4, "done": 5,
            "rejected": 2, "fix_failed": 3, "failed": -1, "hunt": 1, "watch": -1}
 HEADLINES = {
-    "idle": "Press ▶ Run the demo. Five AI agents find, prove and fix a real security bug, all on this machine.",
+    "idle": "Monitoring. Local AI agents find, prove and fix vulnerabilities on this machine. "
+            "Press ▶ Investigate to analyse an advisory now.",
     "find": "Scout reads the security advisory and works out where the bug lives.",
     "attack": "Ralph writes a real attack and fires it inside a locked sandbox.",
     "prove": "The Verifier re-runs the attack on fresh copies: it must break the buggy code and fail on the "
              "fixed code, or it does not count.",
     "fix": "Felix writes a patch. Then it is tested: the attack must fail now, and nothing else may break.",
     "approve": "The fix is ready and goes to Slack. A human approves it from anywhere.",
-    "done": "Fix ready for review in Slack. Nothing ships until a human clicks Approve.",
+    "done": "Fix ready for review. Nothing ships until a human approves it.",
     "rejected": "Not proven: the Verifier rejected the attack, so nothing gets patched. No false alarms.",
     "fix_failed": "The patch did not pass every test, so it is held back for a human. Nothing broken ships.",
     "failed": "Something crashed. The item was stopped safely.",
@@ -142,7 +145,7 @@ HEADLINES = {
 LAST = {"done": "last finding: fix ready for review", "rejected": "last finding: not proven, nothing patched",
         "fix_failed": "last finding: patch held back for a human", "failed": "last finding: stopped after a crash"}
 CVE_NAMES = {"CVE-2024-21513": "LangChain SQL code injection", "CVE-2023-44467": "LangChain sandbox escape"}
-TARGET_NAMES = {"victim_app": "mini replica", "langchain": "real LangChain code"}
+TARGET_NAMES = {"victim_app": "replica app", "langchain": "langchain-experimental"}
 ROLE_CARDS = {"red": ("Scout + Ralph", "investigate & attack"), "blue": ("Felix", "writes the fix"),
               "victim": ("Target app's AI", "the one being attacked")}
 
@@ -215,6 +218,25 @@ def item_panel(st: RunState) -> Text:
     return t
 
 
+def host_memory() -> tuple[float, float]:
+    """(total_gb, used_gb) of this machine: /proc/meminfo on Linux (the GB10), sysctl + vm_stat on macOS."""
+    from wreckless.metrics import meminfo
+    total, used = meminfo()
+    if total or sys.platform != "darwin":
+        return total, used
+    try:
+        total = int(subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True,
+                                   timeout=2).stdout) / 2**30
+        vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=2).stdout
+        page = int(re.search(r"page size of (\d+)", vm).group(1))
+        pages = {k.strip(): int(v.strip().rstrip(".")) for k, v in
+                 (ln.split(":", 1) for ln in vm.splitlines()[1:] if ":" in ln) if v.strip().rstrip(".").isdigit()}
+        busy = sum(pages.get(k, 0) for k in ("Pages active", "Pages wired down", "Pages occupied by compressor"))
+        return total, busy * page / 2**30
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return 0.0, 0.0
+
+
 def gb10_text(snap) -> Text:
     t = Text()
     if snap is None:
@@ -227,11 +249,14 @@ def gb10_text(snap) -> Text:
         t.append(f" {snap.mem_used_gb:.0f}/{snap.mem_total_gb:.0f} GB\n")
     else:
         t.append("MEMORY ", style="bold")
-        t.append("n/a here (no /proc/meminfo: not the GB10)\n", style="dim")
+        t.append("unavailable\n", style="dim")
     for p in snap.ports:
         t.append(f"{p.role:<12}", style="bold")
         if not p.up:
             t.append(f":{p.port} down\n", style="dim")
+            continue
+        if p.model == "running (no vLLM metrics)":   # e.g. Ollama on a laptop: it answers, no counters
+            t.append(f":{p.port} running · no speed metrics\n")
             continue
         rate = f"{p.tok_s:5.1f} tok/s" if p.tok_s is not None else "  …   tok/s"
         t.append(f":{p.port} {rate}  run {p.running:.0f} wait {p.waiting:.0f}  {p.ckpt or p.model or ''}\n")
@@ -407,10 +432,10 @@ class WrecklessApp(App):
     #swaplog { height: 8; border: round $foreground 25%; }
     """
     BINDINGS = [
-        Binding("r", "launch(False)", "Run demo"), Binding("d", "launch(True)", "Run with AI"),
+        Binding("r", "launch(True)", "Investigate"), Binding("s", "launch(False)", "Self-test"),
         Binding("m", "tab('models')", "Settings"), Binding("p", "replay", "Replay"),
-        Binding("c", "cycle_cve", "Bug", show=False), Binding("t", "cycle_target", "Code", show=False),
-        Binding("s", "toggle_slack", "Slack", show=False),
+        Binding("c", "cycle_cve", "Advisory", show=False), Binding("t", "cycle_target", "Target", show=False),
+        Binding("a", "toggle_slack", "Slack alerts", show=False),
         Binding("1", "tab('live')", "Live", show=False), Binding("2", "tab('gate')", "Proof", show=False),
         Binding("3", "tab('queue')", "Findings", show=False), Binding("4", "tab('models')", "Settings", show=False),
         Binding("q", "quit", "Quit"),
@@ -446,9 +471,9 @@ class WrecklessApp(App):
                     with VerticalScroll(id="item_box"):
                         yield Static(id="item")
                 with Horizontal(id="controls"):
-                    yield Button("▶ Run the demo", id="run", variant="primary")
-                    yield Button("Run with live AI", id="runai")
-                    yield Button("⟲ Replay", id="replay")
+                    yield Button("▶ Investigate", id="investigate", variant="primary")
+                    yield Button("Self-test", id="selftest")
+                    yield Button("⟲ Replay last finding", id="replay")
                     yield Button("", id="cve")
                     yield Button("", id="target")
                     yield Button("", id="slack")
@@ -477,7 +502,7 @@ class WrecklessApp(App):
         self.main.query_one("#queue_table", DataTable).add_columns("item", "source", "cve", "state", "label", "title")
         self.main.query_one("#roles", DataTable).add_columns("role", "uses model", "at")
         self.main.query_one("#item_box").border_title = "this finding"
-        self.main.query_one("#gb10", Static).border_title = "GB10 · memory and speed"
+        self.main.query_one("#gb10", Static).border_title = "memory and AI speed (all local)"
         self.main.query_one("#log", RichLog).border_title = "what the agents are doing"
         self.main.query_one("#gate_detail", RichLog).border_title = "the proof"
         self.main.query_one("#opts", OptionList).border_title = "options"
@@ -489,8 +514,8 @@ class WrecklessApp(App):
             self._backfill()
         if not self.state.gates:
             self.main.query_one("#gate_detail", RichLog).write(Text(
-                "No proofs recorded yet. Press ▶ Run the demo: the Verifier re-runs the attack on 2 buggy "
-                "copies and 1 fixed copy, in random order, each with a fresh secret, and every run shows here.",
+                "No proofs recorded yet. For every finding the Verifier re-runs the attack on 2 vulnerable "
+                "copies and 1 fixed copy, in random order, each with a fresh secret; every run shows here.",
                 style="dim"))
         self._story()
         self.set_interval(0.25, self._tick(self._poll))
@@ -516,17 +541,21 @@ class WrecklessApp(App):
 
     def _labels(self) -> None:
         running = bool(self.proc and self.proc.poll() is None)
-        self.main.query_one("#cve", Button).label = f"Bug: {CVE_NAMES.get(self.cve, self.cve)}"
-        self.main.query_one("#target", Button).label = f"Code: {TARGET_NAMES[self.target]}"
+        self.main.query_one("#cve", Button).label = f"Advisory: {self.cve}"
+        self.main.query_one("#target", Button).label = f"Target: {TARGET_NAMES[self.target]}"
         sl = self.main.query_one("#slack", Button)
-        sl.label = "Slack: ON" if self.slack else "Slack: off"
-        for b in ("run", "runai"):
+        sl.label = "Slack alerts: on" if self.slack else "Slack alerts: off"
+        for b in ("investigate", "selftest"):
             self.main.query_one(f"#{b}", Button).disabled = running
         rep = " · REPLAY" if self.replay_q else ""
         if self.state.pulse:   # the 24/7 daemon's heartbeat: it is alive even when nothing is in flight
             rep += " · swarm " + self.state.pulse[:70]
-        self.sub_title = (f"{self.home} · {self.target} · {self.cve} · Slack "
-                          f"{'ON' if self.slack else 'off'}{' · RUNNING' if running else ''}{rep}")
+        try:
+            home = self.home.resolve().relative_to(ROOT.resolve())
+        except ValueError:
+            home = self.home
+        self.sub_title = (f"{home} · {TARGET_NAMES[self.target]} · {self.cve} · Slack alerts "
+                          f"{'on' if self.slack else 'off'}{' · INVESTIGATING' if running else ''}{rep}")
 
     def _story(self) -> None:
         self.main.query_one("#steps", Static).update(steps_bar(self.state))
@@ -589,6 +618,11 @@ class WrecklessApp(App):
         if not hasattr(self, "_mon"):
             self._mon = Monitor()
         snap = self._mon.sample()
+        if not snap.mem_total_gb:
+            snap.mem_total_gb, snap.mem_used_gb = host_memory()
+        for p in snap.ports:   # a port without vLLM /metrics may still answer (Ollama): say so
+            if not p.up and models._get(self._mon.endpoints[p.role].rstrip("/") + "/models", timeout=1):
+                p.up, p.model = True, "running (no vLLM metrics)"
         self.call_from_thread(self.main.query_one("#gb10", Static).update, gb10_text(snap))
 
     @work(thread=True, exclusive=True, group="brains")
@@ -706,8 +740,8 @@ class WrecklessApp(App):
         bid = e.button.id or ""
         if bid.startswith("change-"):
             self.action_pick(bid.removeprefix("change-"))
-        elif bid in ("run", "runai"):
-            self.action_launch(bid == "runai")
+        elif bid in ("investigate", "selftest"):
+            self.action_launch(bid == "investigate")
         elif bid == "replay":
             self.action_replay()
         elif bid == "cve":
@@ -730,13 +764,14 @@ class WrecklessApp(App):
 
     def action_toggle_slack(self) -> None:
         self.slack = not self.slack
-        self.notify("runs now post their card to Slack" if self.slack else "cards stay on this machine (outbox)",
-                    title=f"Slack {'ON' if self.slack else 'off'}")
+        self.notify("findings started here post their card to Slack" if self.slack
+                    else "cards stay on this machine (logs/slack_outbox.jsonl)",
+                    title=f"Slack alerts {'on' if self.slack else 'off'}")
         self._labels()
 
     def action_launch(self, llm: bool) -> None:
         if self.proc and self.proc.poll() is None:
-            self.notify("a run is already going", severity="warning")
+            self.notify("an investigation is already running", severity="warning")
             return
         cmd = [sys.executable, "-m", "wreckless", "run", "--cve", self.cve, "--target", self.target,
                "--home", str(self.home)] + (["--demo-mode"] if llm else ["--no-llm"])
@@ -746,8 +781,9 @@ class WrecklessApp(App):
                                          stdin=subprocess.DEVNULL)
         self.state.phase, self.state.t0 = "find", time.time()
         self.main.query_one(TabbedContent).active = "live"
-        self.notify(f"{CVE_NAMES.get(self.cve, self.cve)} · {TARGET_NAMES[self.target]}"
-                    + (" · with live AI" if llm else " · scripted"), title="Run started")
+        self.notify(f"{self.cve} ({CVE_NAMES.get(self.cve, 'advisory')}) on {TARGET_NAMES[self.target]}"
+                    + (" · local AI agents" if llm else " · known-good exploit and patch, to check the pipeline"),
+                    title="Investigation started" if llm else "Self-test started")
         self._labels()
 
     def action_replay(self) -> None:
@@ -757,7 +793,7 @@ class WrecklessApp(App):
         evs = list(ev_mod._events(path)) if path.exists() else []
         done = [e["item"] for e in evs if e.get("kind") == "transition" and e.get("to") in FINAL and e.get("item")]
         if not done:
-            self.notify("nothing recorded to replay yet", severity="warning")
+            self.notify("no finished finding to replay yet", severity="warning")
             return
         last = done[-1]
         start = next(x["t"] for x in evs if x.get("item") == last)

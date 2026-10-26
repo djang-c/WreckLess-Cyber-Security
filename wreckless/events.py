@@ -78,6 +78,14 @@ def replay(path: Path, speed: float = 1.0, item: str | None = None, max_gap: flo
 
 
 def _render(ev: dict) -> None:
+    prev, ui.CLOCK = ui.CLOCK, ev.get("t")
+    try:
+        _render_one(ev)
+    finally:
+        ui.CLOCK = prev
+
+
+def _render_one(ev: dict) -> None:
     kind, actor, t = ev["kind"], ev["actor"], ev["t"]
     args = {k: v for k, v in ev.items() if k not in ("t", "actor", "kind", "item")}
     if kind == "transition":

@@ -131,6 +131,10 @@ def _animate() -> bool:
     return OUT is None and color_enabled() and sys.stdout.isatty() and not os.environ.get("WRECKLESS_NO_ANIM")
 
 
+# Set while a recorded event is re-rendered (replay, the TUI): lines without their own timestamp
+# (tool calls, results, steps) show when the event happened, not when it was drawn. None = now.
+CLOCK = None
+
 # True while `wreckless replay` renders: every trace line is marked, not just the banners.
 REPLAYING = False
 
@@ -139,7 +143,7 @@ def say(role: str, msg: str, ts: float | None = None, _record: bool = True) -> N
     """One trace line. ``ts`` lets replay print the original wall-clock time."""
     _, icon, tag = ROLES[role]
     color = role_color(role)
-    stamp = time.strftime("%H:%M:%S", time.localtime(ts))
+    stamp = time.strftime("%H:%M:%S", time.localtime(ts if ts is not None else CLOCK))
     mark = _c(REVERSE, "REPLAY") + " " if REPLAYING else ""
     _out(f"{mark}{_c(color, f'{stamp} {icon} [{tag}]')} {msg}")
     if _record:

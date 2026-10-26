@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
 
     swarm = Swarm(_settings(a), a.home)
     if a.cmd == "run":
-        ui.banner(f"WreckLess · {a.cve} · {a.mode} mode{' · demo' if a.demo_mode else ''}")
+        ui.banner(f"WreckLess · {a.cve} · {a.mode} mode{' · reliable mode' if a.demo_mode else ''}")
         ui.say("core", f"home {swarm.home} · target: {swarm.target.name} · enclave: {_backend()}")
         return 0 if swarm.run_hero(a.cve) == "notified" else 1
     swarm.run_daemon(a.purple_interval, hunt=not a.no_hunt, slack_listener=a.slack_listener, porter=a.porter)

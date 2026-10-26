@@ -104,9 +104,9 @@ def test_replay_key_replays_the_last_item_tagged(home):
 def test_cve_target_slack_keys_change_the_launch(home):
     async def steps(app, pilot):
         assert app.slack is False                       # never posts unless asked
-        await pilot.press("c", "t", "s")
+        await pilot.press("c", "t", "a")
         assert (app.cve, app.target, app.slack) == ("CVE-2023-44467", "langchain", True)
-        assert "Slack ON" in app.sub_title
+        assert "Slack alerts on" in app.sub_title
         return True
     assert run_app(home, steps)
 
@@ -122,14 +122,14 @@ def test_nothing_reaches_the_real_terminal_while_captured(capsys):
 
 def test_story_follows_the_run_in_plain_words(home):
     st = tui.RunState()
-    assert "Press ▶ Run the demo" in tui.headline(st).plain
+    assert "Press ▶ Investigate" in tui.headline(st).plain
     seen = []
     for e in events(home):
         st.apply(e)
         if not seen or seen[-1] != st.phase:
             seen.append(st.phase)
     assert seen == ["find", "attack", "prove", "fix", "approve", "done"]
-    assert "Nothing ships until a human clicks Approve" in tui.headline(st).plain
+    assert "Nothing ships until a human approves it" in tui.headline(st).plain
     assert tui.steps_bar(st).plain.count("✓") == 5
 
 
@@ -189,3 +189,12 @@ def test_story_keeps_moving_between_findings_in_24_7_mode():
     assert st.phase == "hunt" and st.pulse.startswith("up 0h01m")
     st.apply({"kind": "enqueue", "actor": "core", "t": 50, "item": "X#2"})
     assert st.phase == "find"                                    # a new finding takes over the story
+
+
+def test_rerendered_tool_lines_show_when_they_happened():
+    """Regression 2026-10-25: backfilled tool calls were stamped with the time they were drawn."""
+    import time as _t
+    t0 = _t.mktime((2026, 10, 25, 9, 8, 7, 0, 0, -1))
+    lines = tui.render_lines({"kind": "tool", "actor": "red", "t": t0, "name": "read_file",
+                              "args": {"path": "victim/vector_sql.py"}})
+    assert any("09:08:07" in ln for ln in lines), lines

@@ -436,7 +436,7 @@ def defend(report: dict, wt: Path, enclave: Enclave, item_dir: Path, s: Settings
     known = bench / "known_good" / "fix.patch" if bench else None
     if not known or not known.exists():
         return "", "none"
-    why = "" if not s.use_llm else f" ({failure})" if failure else " (demo-mode fallback)"
+    why = "" if not s.use_llm else f" ({failure})" if failure else " (the model's attempt did not pass; reliable-mode fallback)"
     ui.say("blue", f"applying \033[1;43;30m {CACHED_LABEL} \033[0m" + why)
     _reset(wt)   # untracked LLM files must not be committed under the cached label
     ui.detail("blue", tools.git_apply_patch(known.read_text()))

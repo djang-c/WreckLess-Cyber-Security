@@ -133,8 +133,10 @@ account could fetch the exploit (logged) or approve a draft PR (never a merge). 
 `scripts/tmux_demo.sh` starts everything: the full-screen app in window **stage** and Porter's two doors
 (Slack side and agents' side, as separate processes) in window **doors**.
 
-- **Live**: a 5-step bar (Find → Attack → Prove → Fix → Approve) with one plain sentence per step, the six
-  birds, the GB10 memory and tokens/sec panel, the agents' log and the finding's checks.
+- **Live**: a 5-step bar (Find → Attack → Prove → Fix → Approve) with one plain sentence per step (and
+  what the swarm does between findings), the six birds, the memory and tokens/sec panel, the agents' log and
+  the finding's checks. **▶ Investigate** runs the local agents on an advisory; **Self-test** replays the
+  known-good exploit and patch to check the pipeline end to end; Slack alerts stay off until switched on.
 - **Proof**: every Verifier verdict with its three runs (two vulnerable copies, one control), in the order they ran.
 - **Findings**: the whole queue. **Settings**: which local model each agent uses; switch to a running model
   instantly, or load one from disk (e.g. NVIDIA Nemotron 3.5 Lightning) in place of the current one.

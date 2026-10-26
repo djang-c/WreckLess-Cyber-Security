@@ -5,7 +5,8 @@ Run: `scripts/demo.sh [live|demo|scripted|replay]` (default `demo`). The script 
 prints every `sudo` command and asks before running it.
 
 Stage layout: `scripts/tmux_demo.sh` opens the full-screen app (`wreckless tui`: 5-step bar with a
-plain sentence per step, the birds, GB10 panel, log, checks; ▶ Run the demo) in window "stage", and
+plain sentence per step, the birds, memory/speed panel, log, checks; ▶ Investigate runs the local
+agents, Self-test replays the known-good exploit and patch to check the pipeline) in window "stage", and
 Porter's two doors in window "doors". `scripts/tmux_demo.sh scripted` keeps the older pane layout
 (flock strip, metrics, `demo.sh` run).
 

@@ -164,7 +164,7 @@ def attack(intel: dict, worktree: Path, enclave: Enclave, out_dir: Path, s: Sett
         if failure:   # say why, or the item is rejected as "no exploit proposed" with no clue
             ui.say("red", f"no exploit for {intel['id']}: {failure} and no cached reference exploit")
         return None
-    why = "" if not s.use_llm else f" ({failure})" if failure else " (demo-mode fallback)"
+    why = "" if not s.use_llm else f" ({failure})" if failure else " (the model's attempt did not pass; reliable-mode fallback)"
     ui.say("red", "proposing cached reference exploit" + why)
     shutil.copy(known, script)
     return Proposal(script, "fallback")
