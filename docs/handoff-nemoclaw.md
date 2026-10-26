@@ -84,16 +84,28 @@ adapter.**
 
 **Update after user said try it anyway (worktree `feature/nemoclaw-wrapper` off origin/main,
 created clean):** pulled the actual published `nemoclaw@0.1.0` from the npm registry and
-inspected its tarball directly. It is an **empty placeholder package** — a bare `package.json`,
-no `index.js`, no code, nothing to run. The richer "NVIDIA NemoClaw" architecture (blueprint
-system, onboarding CLI, docs.nvidia.com pages, GitHub repo/stars/issue numbers) that web search
-returned does not correspond to this package and could not be independently verified — the
-specificity of those results (exact star counts, issue numbers, version strings) matches a known
-hallucination pattern for a novel/rare search term rather than confirmed fact. Did not attempt
-`npm install -g git+https://github.com/NVIDIA/NemoClaw.git` — installing/running an unverified
-third-party repo globally on this machine isn't a call to make on search-result plausibility
-alone. **Bailing for real this time: there's currently nothing functional to wrap.** No files
-outside this doc were touched; worktree left as a clean checkout of origin/main plus this note.
+inspected its tarball directly. It is an **empty placeholder package** (bare `package.json`, no
+code) — unrelated name-squat, not NVIDIA's tool. Initially (wrongly) concluded from this that the
+richer NVIDIA architecture was probably hallucinated by web search. **That conclusion was wrong**
+— corrected below after direct verification.
+
+**Correction (verified via GitHub API + direct doc fetch, not search summaries):** NemoClaw is
+real — `github.com/NVIDIA/NemoClaw`, Apache-2.0, org-owned, actively pushed, 22.8k stars. It
+installs from GitHub source (not the squatted npm name). Confirmed via the actual CLI commands
+reference and architecture docs:
+- Supports exactly three named agent runtimes: **OpenClaw, Hermes, LangChain Deep Agents Code**.
+  `wreckless` is none of these.
+- No generic exec/run/passthrough CLI command exists (checked the full commands reference).
+  Onboarding only selects among installed runtimes via `--agent`/`--from-image`.
+- Adding a 4th runtime is undocumented — no extension point or contributor guide. It would mean
+  building our own agent manifest + in-sandbox TypeScript adapter/plugin reverse-engineered from
+  OpenClaw's integration shape (registers inference metadata, slash commands, runtime hooks).
+
+**Verdict: not impossible, but open-ended undocumented engineering, not a thin wrapper.** That
+shape of work (an adapter relaying tool calls/runtime context) is exactly what the doc's hard
+constraint rules out — risks becoming a second orchestration layer beside `swarm.py`/`gate.py`.
+**Bailing given the time crunch; we already satisfy the stack requirement via OpenShell.** No
+audited files touched; worktree left clean.
 
 ## Repo rules (same as the rest of the project)
 - Commit as Kevin Jiang <kevin.jiang53@gmail.com>. No `Co-Authored-By` / "Generated with" trailers.
