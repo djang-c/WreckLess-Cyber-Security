@@ -156,7 +156,10 @@ account could fetch the exploit (logged) or approve a draft PR (never a merge). 
 ## The app
 
 `scripts/tmux_demo.sh` starts everything: the full-screen app in window **stage** and Porter's two doors
-(Slack side and agents' side, as separate processes) in window **doors**.
+(Slack side and agents' side, as separate processes) in window **doors**. The agents' side runs the full
+24/7 daemon by default — scheduled advisory sync, continuous Red-hunt, the gate worker, all in one process
+with Porter's inner door — because that is the mode judged against "build an always-on agent," not a
+side mode; pass `--no-daemon` to fall back to a bare `wreckless run --cve <ID>` for a single, hand-picked case.
 
 - **Live**: a 5-step bar (Find → Attack → Prove → Fix → Approve) with one plain sentence per step (and
   what the swarm does between findings), the six birds, the memory and tokens/sec panel, the agents' log and

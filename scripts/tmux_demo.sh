@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # One-line stage bringup.
 #
-# Usage: scripts/tmux_demo.sh [tui|live|demo|scripted|replay] [--daemon] [--no-slack]
+# Usage: scripts/tmux_demo.sh [tui|live|demo|scripted|replay] [--no-daemon] [--no-slack]
 #        scripts/tmux_demo.sh -- <command...>               -> runs that command in the main pane instead
 #        e.g. scripts/tmux_demo.sh -- env WRECKLESS_SANDBOX=userland uv run wreckless run --agentic
 #   tui (default)  window "stage": the full-screen app (`wreckless tui`: flock, log, GB10, Settings)
 #   live|demo|...  window "stage": flock strip (top), metrics, then scripts/demo.sh <rung>
 #   window "doors" (unless --no-slack): Porter's two doors as two processes
 #     left  : Slack side   python -m wreckless.slack_socket   (buttons + @mentions; never touches a finding)
-#     right : agents' side python -m wreckless.porter         (records clicks, answers, opens the draft PR)
-#             --daemon runs the full 24/7 swarm there instead: wreckless daemon --porter
+#     right : agents' side wreckless daemon --porter          (default: the full 24/7 swarm — scheduled
+#             advisory sync, continuous Red-hunt, the gate worker — plus Porter's inner door in-process)
+#             --no-daemon drops back to a lone python -m wreckless.porter (records clicks/answers only;
+#             pair it with a manual `wreckless run --cve ...` when you want just the one-shot hero path)
 #   The Slack side only starts if `python -m wreckless.slack_socket --check` passes (offline check).
 # Switch windows: click the name in the status bar, or Ctrl-b n. Mouse is on (click a pane to focus,
 # drag borders to resize, wheel to scroll). Re-running attaches; kill first with: tmux kill-session -t wl
@@ -22,11 +24,12 @@ S=${WL_SESSION:-wl}
 attach() { [[ -n ${WL_NO_ATTACH:-} ]] && exit 0; exec tmux attach -t "$S"; }
 if tmux has-session -t "$S" 2>/dev/null; then attach; fi
 
-RUNG=tui DOORS=1 INNER="uv run python -m wreckless.porter" MAIN=""
+RUNG=tui DOORS=1 INNER="uv run wreckless daemon --porter" MAIN=""
 while (( $# )); do
   case $1 in
     --) shift; MAIN="$*"; RUNG=custom; break ;;
-    --daemon) INNER="uv run wreckless daemon --porter" ;;
+    --no-daemon) INNER="uv run python -m wreckless.porter" ;;
+    --daemon) : ;;  # back-compat no-op: this is the default now
     --no-slack) DOORS=0 ;;
     tui|live|demo|scripted|replay) RUNG=$1 ;;
     *) echo "unknown argument: $1 (see the header of $0)" >&2; exit 2 ;;
