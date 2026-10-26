@@ -18,6 +18,10 @@ from wreckless.targets import Target, default as default_target
 CONTRACT = """Script contract (mandatory):
 - invoked as: python repro_exploit.py <victim_repo_path> [--agentic]
 - insert <victim_repo_path> at sys.path[0] and import the victim package from there
+- the victim source tree is READ-ONLY and your own working directory is NOT writable. If the
+  exploit needs scratch space (a directory to stand up a fixture app, a file to point the victim
+  at), create it under WRECKLESS_ORACLE's own directory, e.g.
+  `Path(os.environ["WRECKLESS_ORACLE"]).parent / "scratch_name"` — that is the only writable path.
 - two oracle modes. Use NONCE MODE unless the advisory says "LEAK ORACLE" — then use LEAK MODE.
 
   NONCE MODE (default): read env WRECKLESS_ORACLE (a file path) and WRECKLESS_NONCE. The
