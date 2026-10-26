@@ -10,9 +10,10 @@ from wreckless import mascots as m  # noqa: E402
 
 W, H, SCALE = 1200, 400, 8
 FONT = "DejaVu Sans, Verdana, Helvetica, Arial, sans-serif"
-ROLES = ["purple", "red", "gate", "blue", "core"]
+ROLES = ["purple", "red", "gate", "blue", "core", "porter"]
 JOBS = {"purple": "reads the advisory", "red": "writes the exploit", "gate": "re-runs it, fresh nonce",
-        "blue": "patches the root cause", "core": "ships the fix for review"}
+        "blue": "patches the root cause", "core": "ships the fix",
+        "porter": "talks to Slack"}
 
 
 def rgb(c) -> str:
@@ -28,11 +29,12 @@ def bird(role: str, cx: int, top: int) -> str:
 
 
 def main(out: Path) -> None:
-    step = 240
-    xs = [120 + i * step for i in range(len(ROLES))]
+    margin = 120
+    step = (W - 2 * margin) // (len(ROLES) - 1)
+    xs = [margin + i * step for i in range(len(ROLES))]
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" '
-        f'aria-label="WreckLess: Scout, Ralph, Verifier, Felix and Conductor, the five agents of the swarm">',
+        f'aria-label="WreckLess: Scout, Ralph, Verifier, Felix, Conductor and Porter, the six agents of the swarm">',
         '<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">'
         '<stop offset="0" stop-color="#181922"/><stop offset="1" stop-color="#0f1016"/></linearGradient></defs>',
         f'<rect width="{W}" height="{H}" rx="18" fill="url(#bg)"/>',

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/hero.svg" alt="WreckLess: Scout, Ralph, Verifier, Felix and Conductor" width="100%">
+<img src="docs/assets/hero.svg" alt="WreckLess: Scout, Ralph, Verifier, Felix, Conductor and Porter" width="100%">
 
 **Reckless red teaming, safely sandboxed, so your production agents wreck less.**
 
