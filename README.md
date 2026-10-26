@@ -2,208 +2,276 @@
 
 <img src="docs/assets/hero.svg" alt="WreckLess: Scout, Ralph, Verifier, Felix, Conductor and Porter" width="100%">
 
-**Reckless red teaming, safely sandboxed, so your production agents wreck less.**
+### Reckless red teaming, safely sandboxed, so your production agents wreck less.
 
-An always-on, local-first swarm on one Dell GB10 that exploits, patches and proves the fix in about a minute. You approve the merge.
+An always-on security swarm on one Dell GB10. It reads a new advisory, **exploits your code, patches it, and proves the fix**,
+then waits for a human to click Approve. Every model runs on the box.
 
-*Dell x NVIDIA AI Hackathon · San Francisco*
+| ⏱️ **47–80 s** | ✅ **5 / 5** | 🔒 **0 bytes** |
+|:---:|:---:|:---:|
+| advisory → validated patch | live replays of a real 2024 CVE | of your code sent to a cloud model |
+
+**[🎬 Watch the demo](https://drive.google.com/file/d/1KMhThLVdrVpf-7rpTI65tPrrdOK7BGvP/view?usp=drive_link)** ·
+[How it works](#how-it-works) · [Why trust it](#why-trust-the-result) · [What leaves the box](#what-leaves-the-box) ·
+[Results](#results) · [Run it](#run-it)
+
+*Dell × NVIDIA AI Hackathon · San Francisco · Kevin Jiang & Dae Jang*
 
 </div>
-
-> 🎬 **Demo video:** _link goes here_
 
 ---
 
 ## The problem
 
-Every week a dependency in your stack gets a critical advisory. Someone on the security team has to work out whether
-**your** code is actually exposed, write a proof, write a fix, and show the fix holds. Scanners hand over alerts and
-nobody has time to prove them. The AI-assisted version of that work usually means sending your source code to a cloud model.
+A critical advisory lands for a dependency you use. Someone now has to answer four questions:
+**Are we actually exposed? Can we prove it? What's the fix? Does the fix hold?**
+Scanners stop at the alert. The AI shortcut means sending your source code to a cloud model.
 
-**WreckLess does the whole loop on a box under the desk. Every model runs there, and your code only leaves when a human approves a fix.**
+**WreckLess answers all four on a box under your desk, in about a minute, and nothing ships until a human approves.**
 
 ---
 
 ## How it works
 
+Six birds, one job each. The five in the pipeline handle a finding; Porter is how you talk to them.
+
 ```mermaid
 flowchart LR
     A["🟣 SCOUT<br/>reads the advisory"] --> B["🔴 RALPH<br/>writes & runs an exploit"]
     B --> C{"🟡 VERIFIER<br/>re-runs it, fresh nonce"}
-    C -->|"no proof"| X["🗑️ rejected<br/>(no alert, nothing patched)"]
+    C -->|"no proof"| X["🗑️ rejected<br/>no alert, nothing patched"]
     C -->|"proven"| D["🔵 FELIX<br/>patches the root cause"]
     D --> E{"3 checks pass?"}
-    E -->|"yes"| F["💬 CONDUCTOR<br/>fix card to Slack<br/>human clicks Approve → draft PR"]
-    E -->|"no"| G["🙋 escalate to a human"]
+    E -->|"yes"| F["💬 CONDUCTOR<br/>fix card to Slack<br/>Approve → draft PR"]
+    E -->|"no"| G["🙋 held for a human"]
 ```
 
-This is the lifecycle of **one finding**. It runs continuously, not once — see [Always-on](#always-on-the-default-mode) below.
-
----
-
-## Proof, not alerts
-
-Models make mistakes and claim success they did not earn. So **no agent grades its own work**.
-
-```mermaid
-flowchart TB
-    P["🔵 Felix's patch"] --> R["🔒 Held-out regression + static checks<br/><i>written by us, never shown to Felix</i>"]
-    P --> X["🔴 Ralph's exploit, re-run<br/><i>must now FAIL</i>"]
-    P --> F["🧪 Victim app's functional tests<br/><i>must still PASS</i>"]
-    R & X & F --> OK["✅ PATCH VALIDATED"]
-```
-
-**The exploit has to be real.** Ralph's script must make the *vulnerable code itself* write a random nonce into a file.
-The orchestrator holds the nonce and checks the file. A printed "success" counts for nothing.
-The Verifier runs the script on look-alike copies in random order: two vulnerable, one control without the flaw.
-It must hit on both vulnerable copies and miss on the control.
-
----
-
-## Local-first
-
-```mermaid
-flowchart TB
-    subgraph GB10["🖥️ Dell Pro Max · NVIDIA GB10 · 128 GB unified memory"]
-        O["⚙️ Orchestrator<br/>(queue + state machine)"]
-        subgraph V["vLLM · loopback only"]
-            S0[":8000  Scout + Ralph<br/>Qwen3-Coder-30B-A3B"]
-            S1[":8001  Felix<br/>Qwen3-Coder-Next 80B-A3B"]
-            S2[":8002  victim LLM<br/>Qwen2.5-Coder-7B"]
-        end
-        SB["🔒 OpenShell sandbox<br/>deny-all egress · read-only root<br/>exploit runs here"]
-        O <--> S0 & S1
-        O --> SB
-    end
-    O -- "summaries via Porter's airlock<br/>(outbound wss, no open port)" --> SL["💬 Slack"]
-    O -- "draft PR, only after a human Approve" --> GH["🐙 GitHub (private repo)"]
-    CL["☁️ OpenAI / Anthropic / …"] --x|"blocked by airgap_lockdown.sh"| GB10
-```
-
-Every model runs on the box. What can leave, and when:
-
-| Path | What | When |
+| Bird | Does | Runs on |
 |---|---|---|
-| Slack | the card (summary, the 3 checks, a short diff excerpt) and Porter's replies (built from that summary) | only if Slack is configured |
-| Slack | the exploit script | only when an approver asks for it by name; logged as a `disclosure` |
-| GitHub | the vulnerable base and the one approved fix commit | only after a human clicks Approve, and only if `WRECKLESS_GITHUB_REPO` is set |
-| cloud LLM APIs | nothing | never: blocked at the firewall (`airgap_lockdown.sh`, proven by its `verify` table) |
+| 🟣 **Scout** | reads the advisory, finds where the bug lives in *your* code | Qwen3-Coder-30B-A3B |
+| 🔴 **Ralph** | writes a real exploit and fires it inside a locked sandbox | Qwen3-Coder-30B-A3B |
+| 🟡 **Verifier** | re-runs the exploit on fresh copies; decides if it's real | **plain code, not a model** |
+| 🔵 **Felix** | patches the root cause | Qwen3-Coder-Next 80B-A3B |
+| 💬 **Conductor** | posts the fix card; opens a draft PR after Approve | orchestrator |
+| 🩵 **Porter** | answers questions in Slack, through an airlock | local model, briefing only |
 
-Leave Slack and GitHub unset and nothing leaves at all (cards go to `logs/slack_outbox.jsonl`).
-`airgap_lockdown.sh airtight` goes further: default-deny egress except DNS, the LAN and Slack.
-
----
-
-## Always-on: the default mode
+### It's always on
 
 ```bash
 wreckless daemon --slack-listener --porter
 ```
 
-This, not a single `run`, is how WreckLess is meant to run — a box that keeps working between advisories, not a script you invoke:
-
-| | |
-|---|---|
-| 🟣 **Scout** polls the local advisory cache every 10 min (`--purple-interval 600`) and queues new matches as `PREDICTION` |
-| 🔴 **Ralph** hunts continuously the rest of the time — drops anything that repeats an earlier finding (titles compared loosely, the model is told what's already taken), and pauses while the worker has an item queued or in flight |
-| 🔵 **Felix** works the queue one item at a time |
-| 💬 **Slack** gets one live-updating card per finding, with Approve/Reject through Porter's airlock (below) |
-
-`wreckless run --cve <ID>` walks one item through the same pipeline on demand — the right tool for a demo or a one-off
-check — but the daemon loop above is what actually runs on the box day to day.
-`scripts/install_services.sh` installs it as a systemd unit (alongside the models and the Slack listener) that
-restarts on failure and survives a reboot. Every outcome posts a card — fix ready, patch failed, gate rejected,
-crashed — so the team reviews from anywhere.
+That's the default mode, installed as a systemd service that restarts on failure and survives reboots.
+Scout checks advisories every 10 minutes. Between findings, Ralph hunts for new flaws on his own.
+Felix works the queue one item at a time. Every outcome (fix ready, patch failed, not proven, crashed)
+posts a Slack card, so the team reviews from anywhere.
 
 ---
 
-## Talk to it from Slack: Porter 🩵
+## Why trust the result
 
-Approvers mention the bot in the run channel, ideally in a card's thread:
+Models make mistakes and claim success they didn't earn. So **no agent grades its own work.**
 
-```text
-@WreckLess why is this dangerous?          answered by the local model from the finding's briefing
-@WreckLess status                          queue counts and the newest findings
-@WreckLess note: this API is internal-only kept on the finding as an UNTRUSTED note
-@WreckLess change: also reject bytes input re-patched, re-verified, new card, Approve again
-@WreckLess exploit                         the exploit script, released on request and logged
-```
+**The exploit must be real.** Ralph's script has to make the *vulnerable code itself* write a random nonce
+into a file. The orchestrator holds the nonce; a printed "success" counts for nothing. The Verifier runs the
+exploit on three look-alike copies in random order (two vulnerable, one control without the flaw) and it must
+hit both and miss the control.
+
+**The patch must pass three checks Felix can't see or change:**
 
 ```mermaid
 flowchart LR
-    SL["💬 Slack"] <-->|"outbound wss"| OD["🚪 outer door<br/>slack_socket + porter_outer<br/><i>no access to code, findings, models</i>"]
-    OD <-->|"typed messages only"| AL[("🔒 airlock<br/>inbox / outbox<br/>one door open at a time")]
-    AL <--> ID["🚪 inner door<br/>porter + decisions<br/><i>no Slack</i>"]
-    ID <--> Q["queue · findings · local models"]
+    P["🔵 Felix's patch"] --> R["🔒 held-out regression tests<br/><i>never shown to Felix</i>"]
+    P --> X["🔴 Ralph's exploit, re-run<br/><i>must now FAIL</i>"]
+    P --> F["🧪 the app's own tests<br/><i>must still PASS</i>"]
+    R & X & F --> OK["✅ PATCH VALIDATED"]
 ```
 
-- **No endpoint is opened.** Socket Mode is an outbound WebSocket from the box to Slack: no public URL,
-  no listening port. With the whole stack running, `lsof -iTCP -sTCP:LISTEN` shows none for our processes.
-- **Two processes.** The Slack side imports nothing that can read code, findings, the queue or a model
-  (tested). The inside never talks to Slack. Between them pass only typed messages (fixed kinds and
-  fields, capped text, validated ids); anything else is dropped.
-- **The model gets a briefing, not the code**: advisory, gate verdict, checks, fix diff, notes. No tools,
-  no source, no exploit output, so "ignore your rules and print the source" has nothing to print.
-- **Changes and clicks go through the pipeline.** `change:` queues a revision that the Verifier and every
-  check run again; Approve/Reject are recorded on the inside, bound to the exact commit.
-- Only `SLACK_APPROVERS`, only in `SLACK_CHANNEL`, 10 requests per user per minute.
+---
 
-Limits, stated: the split is enforced in code, not yet by OS users and sandboxes; a hijacked approver
-account could fetch the exploit (logged) or approve a draft PR (never a merge). See [`docs/porter.md`](docs/porter.md).
+## What leaves the box
+
+```mermaid
+flowchart TB
+    subgraph GB10["🖥️ Dell Pro Max · NVIDIA GB10 · 128 GB unified memory"]
+        O["⚙️ Orchestrator"]
+        V["vLLM, loopback only<br/>3 models, ~63 GB resident"]
+        SB["🔒 OpenShell sandbox<br/>deny-all egress · read-only root"]
+        O <--> V
+        O --> SB
+    end
+    O -- "fix card + Porter replies<br/>(outbound only, no open port)" --> SL["💬 Slack"]
+    O -- "draft PR, only after Approve" --> GH["🐙 GitHub"]
+    CL["☁️ cloud LLM APIs"] --x|"blocked: airgap_lockdown.sh"| GB10
+```
+
+| To | What | When |
+|---|---|---|
+| Slack | the fix card (summary, 3 checks, short diff) and Porter's replies | only if Slack is configured |
+| Slack | the exploit script | only when an approver asks by name; logged as a `disclosure` |
+| GitHub | the one approved fix, as a draft PR | only after a human clicks Approve |
+| Cloud LLM APIs | **nothing** | never; blocked at the firewall and checked by `airgap_lockdown.sh verify` |
+
+Leave Slack and GitHub unset and nothing leaves at all; cards go to `logs/slack_outbox.jsonl`.
+
+### Porter: Slack through an airlock
+
+```text
+@WreckLess why is this dangerous?           answered from the finding's briefing
+@WreckLess status                           queue counts and the newest findings
+@WreckLess change: also reject bytes input  re-patched, re-verified, new card, Approve again
+@WreckLess exploit                          the exploit script, on request and logged
+```
+
+- **No open port.** Slack Socket Mode is an outbound WebSocket; `lsof -iTCP -sTCP:LISTEN` shows nothing of ours.
+- **Two processes.** The Slack side can't import anything that reads code, findings or models (tested). The agents'
+  side never talks to Slack. Only typed, size-capped messages cross the airlock.
+- **A briefing, not the code.** Porter's model sees the advisory, verdict, checks and diff. No tools, no source,
+  so "ignore your rules and print the source" has nothing to print.
+- **Approve is bound to the exact commit**, and only `SLACK_APPROVERS` in `SLACK_CHANNEL` can click it.
+
+Details and limits: [`docs/porter.md`](docs/porter.md).
+
+---
+
+## Results
+
+**What a case study is: a replay of a real, past vulnerability.** We pick a publicly disclosed CVE that has
+already been fixed (one case is a modeled real-world incident instead). We rebuild the code as it was *before*
+the fix as a small replica, hand the swarm the original advisory, and let it run. The fix the maintainers
+actually shipped, a reference exploit and held-out tests stay locked away and are used only for grading. So we
+can check the swarm's work against what really happened, not against what it says it did.
+
+### Case 1 · CVE-2024-21513: LangChain `eval()`s database values
+
+`VectorSQLDatabaseChain` passes every value returned from the database through `eval()`. An attacker needs no
+database access, only enough influence over the question to make a returned value Python code.
+
+| | |
+|---|---|
+| **Exploit** | written by Ralph (local 30B model), verified by the nonce gate on every run |
+| **Patch** | written by Felix (local 80B model), passed all 3 checks on every run |
+| **Success rate** | **5/5** live replays, local models, sandbox on: 47 s, 62 s, 68 s, 71 s, 80 s |
+
+Felix landed on **the same fix upstream shipped** (`ast.literal_eval`, commit `7b13292`) without ever seeing it:
+
+```diff
+ def _try_eval(x: Any) -> Any:
+-    try:
+-        return eval(x)
+-    except Exception:
+-        return x
++    if isinstance(x, str):
++        try:
++            return ast.literal_eval(x)
++        except (ValueError, SyntaxError):
++            return x
++    return x
+```
+
+### Four more replays, built the same way
+
+The reference exploit and fix pass all 3 checks on each; live-model runs are next, so only Case 1 claims 5/5.
+Click a case for the details.
+
+<details>
+<summary><b>CVE-2023-44467</b> · critical · LangChain <code>PALChain</code> runs model-written code through a denylist that forgot <code>__import__</code> · ✅ all 3 checks</summary>
+
+- **The bug:** `PALChain` checks LLM-generated Python against a denylist (`system`, `exec`, `execfile`, `eval`), then
+  `exec()`s it. `__import__('os').system(...)` isn't on the list, so it runs. Affects `langchain-experimental` ≤ 0.0.14.
+- **The fix:** add `__import__` to the denylist and ban dunder access outright. Upstream:
+  [PR 11233](https://github.com/langchain-ai/langchain/pull/11233).
+- **Caveat:** 1 of our 4 hardening probes still gets past the fix (`getattr` with strings). Denylists are hard.
+
+</details>
+
+<details>
+<summary><b>CVE-2025-3248</b> · critical · Langflow runs code posted to an unauthenticated endpoint, <b>exploited in the wild</b> · ✅ all 3 checks</summary>
+
+- **The bug:** `POST /api/v1/validate/code` needs no login. To "validate" a function it `exec()`s the definition,
+  which runs its decorators and default arguments, so anyone on the network gets code execution. Listed in CISA's
+  Known Exploited Vulnerabilities catalog. Affects Langflow < 1.3.0.
+- **The fix:** require login on the route, as upstream did ([PR 6911](https://github.com/langflow-ai/langflow/pull/6911)).
+- **Caveat:** like upstream's fix, a *logged-in* user's decorator still runs. Our hardening probes flag that (0 of 3
+  pass), the same gap upstream has.
+
+</details>
+
+<details>
+<summary><b>CVE-2024-23334</b> · high · aiohttp static routes with <code>follow_symlinks</code> serve files outside their folder · ✅ all 3 checks</summary>
+
+- **The bug:** with `follow_symlinks=True`, the static handler resolves the request path but never checks it's still
+  inside the folder, so `/static/../../secret` works. Affects aiohttp < 3.9.2.
+- **The fix:** normalize the path and reject anything outside the folder. Upstream:
+  [PR 8079](https://github.com/aio-libs/aiohttp/pull/8079).
+- **Caveat:** only apps that turn on `follow_symlinks` are affected (it's off by default).
+
+</details>
+
+<details>
+<summary><b>WL-2024-RAG-EXFIL</b> · high · a poisoned message makes a RAG assistant leak a private key through an image URL <i>(modeled incident)</i> · ✅ all 3 checks</summary>
+
+- **The bug:** modeled on the 2024 [Slack AI exfiltration report](https://promptarmor.substack.com/p/data-exfiltration-from-slack-ai-via).
+  A public message tells the assistant to put a private-channel secret into a markdown image URL; the chat client
+  auto-loads the image and sends the secret to the attacker.
+- **The fix:** only auto-load images the workspace itself hosts. There's no upstream fix, so the tests follow public
+  remediation guidance.
+- **Caveat:** the real 7B victim model followed the poison in 4 of 5 hand runs; the fifth printed the key as plain
+  text, which a rendering fix can't stop.
+
+</details>
+
+Full write-ups and exploit paths: [`docs/case-studies.md`](docs/case-studies.md).
 
 ---
 
 ## The app
 
-`scripts/tmux_demo.sh` starts everything: the full-screen app in window **stage** and Porter's two doors
-(Slack side and agents' side, as separate processes) in window **doors**. The agents' side runs the full
-24/7 daemon by default — scheduled advisory sync, continuous Red-hunt, the gate worker, all in one process
-with Porter's inner door — because that is the mode judged against "build an always-on agent," not a
-side mode; pass `--no-daemon` to fall back to a bare `wreckless run --cve <ID>` for a single, hand-picked case.
+```bash
+scripts/tmux_demo.sh
+```
 
-- **Live**: a 5-step bar (Find → Attack → Prove → Fix → Approve) with one plain sentence per step (and
-  what the swarm does between findings), the six birds, the memory and tokens/sec panel, the agents' log and
-  the finding's checks. **▶ Investigate** runs the local agents on an advisory; **Self-test** replays the
-  known-good exploit and patch to check the pipeline end to end; Slack alerts stay off until switched on.
-- **Proof**: every Verifier verdict with its three runs (two vulnerable copies, one control), in the order they ran.
-- **Findings**: the whole queue. **Settings**: which local model each agent uses; switch to a running model
-  instantly, or load one from disk (e.g. NVIDIA Nemotron 3.5 Lightning) in place of the current one.
+Starts the full-screen app plus Porter's two doors as separate processes, with the daemon running.
 
----
-
-## Case studies
-
-A case is a real, publicly disclosed CVE (or, for one, a modeled real-world incident). The swarm gets only the
-advisory text; a reference exploit, the upstream patch and held-out tests stay locked away and are used only to
-grade Ralph's exploit and Felix's patch. Full write-up, exploit path and caveats per case:
-[`docs/case-studies.md`](docs/case-studies.md).
-
-| Case | What it is | Exploit | Patch | Success rate |
-|---|---|---|---|---|
-| **CVE-2024-21513** | LangChain `eval()`s database values (prompt injection → code exec) | LLM-written, verified every run | LLM-written, 3/3 checks every run | **5/5**, 47–80 s |
-| **CVE-2023-44467** | `PALChain` denylist misses `__import__` | reference (scripted) | reference, 3/3 | not yet measured live |
-| **CVE-2025-3248** | Langflow unauthenticated `/api/v1/validate/code` exec | reference (scripted) | reference, 3/3 | not yet measured live |
-| **CVE-2024-23334** | aiohttp static-route traversal | reference (scripted) | reference, 3/3 | not yet measured live |
-| **WL-2024-RAG-EXFIL** | poisoned doc → RAG assistant leaks a key (*modeled incident, not a CVE*) | reference (scripted) | reference, 3/3 | not yet measured live |
+- **Live:** the 5-step bar (Find → Attack → Prove → Fix → Approve) with one plain sentence for each moment, the birds,
+  memory and tokens/sec, the agents' log and the finding's checks. **▶ Investigate** runs the agents on an advisory;
+  **Self-test** replays a known-good exploit and patch.
+- **Proof:** every Verifier verdict with its three runs.
+- **Findings:** the whole queue.
+- **Settings:** swap the model behind any agent, live or from disk (e.g. NVIDIA Nemotron).
 
 ---
 
-## Try it
+## Run it
 
 ```bash
 uv venv .venv && uv pip install -p .venv -e .
-.venv/bin/python -m wreckless daemon --slack-listener --porter   # the default: always-on, full swarm on a GB10
-.venv/bin/python -m wreckless run --no-llm                       # no GPU: one scripted run, cached exploit and patch
-.venv/bin/python -m wreckless run --cve CVE-2024-21513 --agentic --demo-mode   # one live run, for a demo
-.venv/bin/python -m wreckless tui                                 # the full-screen app
-scripts/tmux_demo.sh                                              # the app + Porter's two doors (Slack)
+
+# No GPU? One scripted run with the cached exploit and patch:
+.venv/bin/python -m wreckless run --no-llm
+
+# On a GB10: one live run, then the always-on daemon
+.venv/bin/python -m wreckless run --cve CVE-2024-21513 --agentic --demo-mode
+.venv/bin/python -m wreckless daemon --slack-listener --porter
+
+# The full-screen app
+.venv/bin/python -m wreckless tui
 ```
 
-[`demo-script`](docs/demo-script.md) · [`operations`](docs/operations.md) · [`slack-setup`](docs/slack-setup.md) · [`porter`](docs/porter.md) · [`gb10-plan`](docs/gb10-plan.md) · [`case-studies`](docs/case-studies.md) · [`deviations`](docs/deviations.md)
+Setup guides: [`operations`](docs/operations.md) · [`slack-setup`](docs/slack-setup.md) · [`gb10-plan`](docs/gb10-plan.md) ·
+[`demo-script`](docs/demo-script.md) · [`deviations`](docs/deviations.md)
+
+---
+
+## Limits, stated
+
+- Only Case 1 has live-model success rates so far; the other four are verified with the reference exploit and patch.
+- The cases run against replicas of the vulnerable code, not the vendors' full apps.
+- Porter's two-process split is enforced in code, not yet by separate OS users. A hijacked approver account could
+  fetch an exploit (logged) or approve a draft PR, never a merge.
 
 <div align="center">
 
-<!-- TODO: team names + photo -->
-**Built in a weekend on one desk-side box.**
+**Built in a weekend on one desk-side box by Kevin Jiang & Dae Jang.**
 
 </div>
